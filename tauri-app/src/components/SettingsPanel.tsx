@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { X, Save, Cpu, Monitor, FileCode, Database, Settings2, MessageSquare, Terminal, Sun, Moon } from 'lucide-react';
+import { X, Save, Cpu, Monitor, FileCode, Database, Settings2, MessageSquare, Terminal, Sun, Moon, Check, RefreshCw } from 'lucide-react';
 
 import { LLMSettings } from './settings/LLMSettings';
 import { MCPSettings } from './settings/MCPSettings';
@@ -35,6 +35,9 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
     const { settings: globalSettings, updateSettings, loadSettings } = useSettings();
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const [saving, setSaving] = useState(false);
+    const [showSaved, setShowSaved] = useState(false);
+    const savedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [pressed, setPressed] = useState(false);
 
     // Configurator state
     const [detectedWindows, setDetectedWindows] = useState<WindowInfo[]>([]);
@@ -44,6 +47,8 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
     const [bslStatus, setBslStatus] = useState<BslStatus | null>(null);
     const [downloading, setDownloading] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState<number>(0);
+    const [bslDownloadError, setBslDownloadError] = useState<string | null>(null);
+    const [bslDownloadSuccess, setBslDownloadSuccess] = useState(false);
     const [diagnosing, setDiagnosing] = useState(false);
     const [diagReport, setDiagReport] = useState<BslDiagnosticItem[] | null>(null);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -51,7 +56,21 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
     useEffect(() => {
         if (isOpen) {
             refreshAll();
+            setBslDownloadSuccess(false);
+            setBslDownloadError(null);
+            // Ensure we don't show a stale "Saved!" state when reopening
+            setShowSaved(false);
+            if (savedTimeoutRef.current) {
+                clearTimeout(savedTimeoutRef.current);
+                savedTimeoutRef.current = null;
+            }
         }
+        return () => {
+            if (savedTimeoutRef.current) {
+                clearTimeout(savedTimeoutRef.current);
+                savedTimeoutRef.current = null;
+            }
+        };
     }, [isOpen]);
 
     const refreshAll = () => {
@@ -66,15 +85,30 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
     };
 
     const handleSaveSettings = async () => {
-        if (!settings) return;
+        if (!settings || saving) return;
+        if (savedTimeoutRef.current) {
+            clearTimeout(savedTimeoutRef.current);
+            savedTimeoutRef.current = null;
+        }
+        setPressed(false);
+        setShowSaved(false);
         setSaving(true);
+
         try {
             await invoke('save_settings', { newSettings: settings });
             await loadSettings(); // Синхронизируем глобальный контекст
+
+            setShowSaved(true);
+            savedTimeoutRef.current = setTimeout(() => {
+                setShowSaved(false);
+                savedTimeoutRef.current = null;
+            }, 3000);
         } catch (err) {
             console.error('Failed to save settings:', err);
+            setShowSaved(false);
+        } finally {
+            setSaving(false);
         }
-        setSaving(false);
     };
 
     const refreshWindows = async () => {
@@ -133,6 +167,8 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
 
     const handleDownloadBslLs = async () => {
         setDownloading(true);
+        setBslDownloadError(null);
+        setBslDownloadSuccess(false);
         const unlisten = await listen<{ percent: number }>('bsl-download-progress', (event) => {
             setDownloadProgress(event.payload.percent);
         });
@@ -145,15 +181,16 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
                     bsl_server: { ...settings.bsl_server, jar_path: path }
                 });
             }
-            try { await invoke('reconnect_bsl_ls_cmd'); } catch (e) { console.warn(e); }
+            setBslDownloadSuccess(true);
+            invoke('reconnect_bsl_ls_cmd').catch(e => console.warn(e));
             setTimeout(refreshBslStatus, 2000);
-            alert('BSL LS installed successfully!');
         } catch (e) {
-            alert('Error downloading BSL LS: ' + e);
+            setBslDownloadError(String(e));
+        } finally {
+            unlisten();
+            setDownloading(false);
+            setDownloadProgress(0);
         }
-        unlisten();
-        setDownloading(false);
-        setDownloadProgress(0);
     };
 
     const runDiagnostics = async () => {
@@ -278,6 +315,8 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
                             handleDownloadBslLs={handleDownloadBslLs}
                             downloading={downloading}
                             downloadProgress={downloadProgress}
+                            downloadError={bslDownloadError}
+                            downloadSuccess={bslDownloadSuccess}
                             diagnosing={diagnosing}
                             diagReport={diagReport}
                             setDiagReport={setDiagReport}
@@ -290,6 +329,7 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
                             <div className="max-w-2xl mx-auto">
                                 <MCPSettings
                                     servers={settings.mcp_servers}
+                                    bslEnabled={settings.bsl_server.enabled}
                                     onUpdate={(mcpServers) => setSettings({ ...settings, mcp_servers: mcpServers })}
                                 />
                             </div>
@@ -316,13 +356,31 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
 
                 {/* Footer */}
                 <div className="p-4 border-t border-zinc-800 bg-zinc-900 flex justify-end gap-3 z-10 relative">
-                    {tab !== 'llm' && (
+                    {tab !== 'llm' && settings && (
                         <button
                             onClick={handleSaveSettings}
                             disabled={saving}
-                            className="flex items-center gap-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all disabled:opacity-50 active:scale-95 shadow-lg shadow-blue-900/20"
+                            onPointerDown={() => setPressed(true)}
+                            onPointerUp={() => setPressed(false)}
+                            onPointerCancel={() => setPressed(false)}
+                            onPointerLeave={() => setPressed(false)}
+                            className={`flex items-center justify-center gap-2 w-44 px-6 py-2 text-white rounded-lg transform-gpu transition-transform duration-150 ease-out ${pressed ? 'scale-95' : 'scale-100'} disabled:opacity-50 shadow-lg ${showSaved ? 'bg-green-600 hover:bg-green-500 shadow-green-900/20' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-900/20'}`}
                         >
-                            <Save className="w-4 h-4" /> Save Settings
+                            {saving ? (
+                                <>
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                    Saving...
+                                </>
+                            ) : showSaved ? (
+                                <>
+                                    <Check className="w-4 h-4" />
+                                    Saved!
+                                </>
+                            ) : (
+                                <>
+                                    <Save className="w-4 h-4" /> Save Settings
+                                </>
+                            )}
                         </button>
                     )}
                 </div>

@@ -1,6 +1,7 @@
 export interface WindowInfo {
     hwnd: number;
     title: string;
+    process_id: number;
 }
 
 export interface BslStatus {
@@ -117,7 +118,13 @@ export interface AppSettings {
     configurator: {
         window_title_pattern: string;
         selected_window_hwnd: number | null;
+        selected_window_pid: number | null;
+        selected_window_title: string | null;
+        selected_config_name: string | null;
         rdp_mode: boolean;
+        editor_bridge_enabled: boolean;
+        editor_bridge_auto_apply: boolean;
+        editor_bridge_exe_path: string;
     };
     bsl_server: {
         jar_path: string;
@@ -156,6 +163,15 @@ export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
         name: 'Исправить',
         description: 'Исправить ошибки BSL и логические ошибки',
         template: 'Исправь ошибки в этом коде. Если доступен инструмент check_bsl_syntax — СНАЧАЛА вызови его для получения актуального анализа, затем исправь все найденные ошибки. Также обрати внимание на следующие диагностики:\n{diagnostics}\n\nКод для исправления:\n```bsl\n{code}\n```',
+        is_enabled: true,
+        is_system: true
+    },
+    {
+        id: 'elaborate',
+        command: 'доработай',
+        name: 'Доработай',
+        description: 'Доработать код по пользовательской задаче',
+        template: 'Доработай этот код по следующей задаче: {query}\n\nТребования:\n- вноси только изменения, которые нужны для выполнения задачи;\n- сохрани стиль и совместимость с 1С;\n- если меняешь код, верни результат в формате, пригодном для сравнения и применения.\n\nКод для доработки:\n```bsl\n{code}\n```',
         is_enabled: true,
         is_system: true
     },

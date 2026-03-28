@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Emitter;
 
-use crate::llm_profiles::get_active_profile;
 use super::models::ApiMessage;
+use crate::llm_profiles::get_active_profile;
 
 const BASE_URL: &str = "https://code.1c.ai";
 
@@ -63,7 +63,6 @@ struct CreateConversationRequest {
     skill_name: String,
     ui_language: String,
 }
-
 
 #[derive(Serialize)]
 struct MessageRequest {
@@ -126,17 +125,30 @@ fn build_client() -> Result<reqwest::Client, String> {
 fn build_headers(token: &str) -> reqwest::header::HeaderMap {
     use reqwest::header::*;
     let mut h = HeaderMap::new();
-    h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
+    h.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     h.insert(ORIGIN, HeaderValue::from_static(BASE_URL));
-    h.insert(REFERER, HeaderValue::from_str(&format!("{}/chat//", BASE_URL)).unwrap_or(HeaderValue::from_static("")));
-    h.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"));
+    h.insert(
+        REFERER,
+        HeaderValue::from_str(&format!("{}/chat//", BASE_URL))
+            .unwrap_or(HeaderValue::from_static("")),
+    );
+    h.insert(
+        USER_AGENT,
+        HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+    );
     if let Ok(v) = HeaderValue::from_str(token) {
         h.insert(AUTHORIZATION, v);
     }
     h
 }
 
-async fn create_conversation(client: &reqwest::Client, token: &str) -> Result<(String, Option<String>), String> {
+async fn create_conversation(
+    client: &reqwest::Client,
+    token: &str,
+) -> Result<(String, Option<String>), String> {
     let url = format!("{}/chat_api/v1/conversations/", BASE_URL);
     let body = CreateConversationRequest {
         is_chat: true,
@@ -159,14 +171,27 @@ async fn create_conversation(client: &reqwest::Client, token: &str) -> Result<(S
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Naparnik: conversation create error {}: {}", status, text));
+        return Err(format!(
+            "Naparnik: conversation create error {}: {}",
+            status, text
+        ));
     }
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Naparnik: parse error: {}", e))?;
-    let uuid = data["uuid"].as_str().ok_or("Naparnik: no uuid in response")?.to_string();
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Naparnik: parse error: {}", e))?;
+    let uuid = data["uuid"]
+        .as_str()
+        .ok_or("Naparnik: no uuid in response")?
+        .to_string();
     let root_msg_uuid = data["root_message_uuid"].as_str().map(|s| s.to_string());
 
-    crate::app_log!("[Naparnik] Created conversation: {} (root_msg: {:?})", uuid, root_msg_uuid);
+    crate::app_log!(
+        "[Naparnik] Created conversation: {} (root_msg: {:?})",
+        uuid,
+        root_msg_uuid
+    );
     Ok((uuid, root_msg_uuid))
 }
 
@@ -180,7 +205,10 @@ pub async fn stream_naparnik_completion(
     let profile = get_active_profile().ok_or("No active LLM profile")?;
     let token = profile.get_api_key();
     if token.is_empty() {
-        return Err("1С:Напарник: токен не задан. Укажите токен code.1c.ai в настройках профиля.".to_string());
+        return Err(
+            "1С:Напарник: токен не задан. Укажите токен code.1c.ai в настройках профиля."
+                .to_string(),
+        );
     }
 
     let profile_id = profile.id.clone();
@@ -202,7 +230,9 @@ pub async fn stream_naparnik_completion(
     };
 
     // Extract last user message text
-    let instruction = messages.iter().rev()
+    let instruction = messages
+        .iter()
+        .rev()
         .find(|m| m.role == "user")
         .and_then(|m| m.content.as_deref())
         .unwrap_or("")
@@ -222,11 +252,16 @@ pub async fn stream_naparnik_completion(
         session.last_message_uuid.clone(),
         instruction,
         &app_handle,
-    ).await?;
+    )
+    .await?;
 
     Ok(ApiMessage {
         role: "assistant".to_string(),
-        content: if full_content.is_empty() { None } else { Some(full_content) },
+        content: if full_content.is_empty() {
+            None
+        } else {
+            Some(full_content)
+        },
         tool_calls: None,
         tool_call_id: None,
         name: None,
@@ -244,7 +279,10 @@ async fn run_message_loop(
     instruction: String,
     app_handle: &tauri::AppHandle,
 ) -> Result<String, String> {
-    let url = format!("{}/chat_api/v1/conversations/{}/messages", BASE_URL, conversation_id);
+    let url = format!(
+        "{}/chat_api/v1/conversations/{}/messages",
+        BASE_URL, conversation_id
+    );
 
     // First payload: user message
     let mut payload: Value = serde_json::to_value(MessageRequest {
@@ -254,7 +292,8 @@ async fn run_message_loop(
             tools: vec![],
         },
         parent_uuid: initial_parent_uuid,
-    }).map_err(|e| e.to_string())?;
+    })
+    .map_err(|e| e.to_string())?;
 
     let mut assistant_segments: Vec<String> = Vec::new();
     let mut is_first_round = true;
@@ -264,7 +303,10 @@ async fn run_message_loop(
             .post(&url)
             .headers({
                 let mut h = build_headers(token);
-                h.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("text/event-stream"));
+                h.insert(
+                    reqwest::header::ACCEPT,
+                    reqwest::header::HeaderValue::from_static("text/event-stream"),
+                );
                 h
             })
             .json(&payload)
@@ -283,12 +325,8 @@ async fn run_message_loop(
             is_first_round = false;
         }
 
-        let tool_calls_to_send = process_sse_stream(
-            response,
-            profile_id,
-            &mut assistant_segments,
-            app_handle,
-        ).await?;
+        let tool_calls_to_send =
+            process_sse_stream(response, profile_id, &mut assistant_segments, app_handle).await?;
 
         if tool_calls_to_send.is_empty() {
             break;
@@ -299,14 +337,17 @@ async fn run_message_loop(
             .and_then(|s| s.last_message_uuid)
             .unwrap_or_default();
 
-        let items: Vec<Value> = tool_calls_to_send.iter().map(|tc| {
-            let tc_id = tc["id"].as_str().unwrap_or("").to_string();
-            serde_json::json!({
-                "status": "accepted",
-                "tool_call_id": tc_id,
-                "content": null
+        let items: Vec<Value> = tool_calls_to_send
+            .iter()
+            .map(|tc| {
+                let tc_id = tc["id"].as_str().unwrap_or("").to_string();
+                serde_json::json!({
+                    "status": "accepted",
+                    "tool_call_id": tc_id,
+                    "content": null
+                })
             })
-        }).collect();
+            .collect();
 
         let tool_result_req = ToolResultRequest {
             role: "tool".to_string(),
@@ -318,7 +359,8 @@ async fn run_message_loop(
         let _ = app_handle.emit("chat-status", "Обработка инструментов Напарника...");
     }
 
-    let full_text = assistant_segments.iter()
+    let full_text = assistant_segments
+        .iter()
         .filter(|s| !s.is_empty())
         .cloned()
         .collect::<Vec<_>>()
@@ -341,14 +383,12 @@ async fn process_sse_stream(
     let mut tool_calls_pending: Vec<Value> = Vec::new();
 
     'outer: loop {
-        let chunk_result = match tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            stream.next(),
-        ).await {
-            Err(_) => return Err("Naparnik: stream timeout (60s)".to_string()),
-            Ok(None) => break,
-            Ok(Some(r)) => r,
-        };
+        let chunk_result =
+            match tokio::time::timeout(std::time::Duration::from_secs(60), stream.next()).await {
+                Err(_) => return Err("Naparnik: stream timeout (60s)".to_string()),
+                Ok(None) => break,
+                Ok(Some(r)) => r,
+            };
 
         let chunk = chunk_result.map_err(|e| format!("Naparnik: stream error: {}", e))?;
         byte_buffer.extend_from_slice(&chunk);
@@ -359,8 +399,14 @@ async fn process_sse_stream(
             let event_str = String::from_utf8_lossy(&event_bytes);
 
             for line in event_str.lines() {
-                let data = if let Some(d) = line.strip_prefix("data: ") { d } else { continue };
-                if data == "[DONE]" { break 'outer; }
+                let data = if let Some(d) = line.strip_prefix("data: ") {
+                    d
+                } else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    break 'outer;
+                }
 
                 let chunk: SseChunk = match serde_json::from_str(data) {
                     Ok(c) => c,
@@ -399,11 +445,11 @@ async fn process_sse_stream(
                             accumulated_text.push_str(text);
                             let normalized = text
                                 .replace("```1\u{0421} (BSL)", "```bsl") // Cyrillic С + (BSL)
-                                .replace("```1\u{0421}", "```bsl")        // Cyrillic С plain
-                                .replace("```1C (BSL)", "```bsl")         // Latin C + (BSL)
-                                .replace("```1C\n", "```bsl\n")           // Latin C + newline
-                                .replace("```1C\r\n", "```bsl\r\n")       // Latin C + CRLF
-                                .replace("```1c (BSL)", "```bsl");        // lowercase + (BSL)
+                                .replace("```1\u{0421}", "```bsl") // Cyrillic С plain
+                                .replace("```1C (BSL)", "```bsl") // Latin C + (BSL)
+                                .replace("```1C\n", "```bsl\n") // Latin C + newline
+                                .replace("```1C\r\n", "```bsl\r\n") // Latin C + CRLF
+                                .replace("```1c (BSL)", "```bsl"); // lowercase + (BSL)
                             let _ = app_handle.emit("chat-chunk", normalized);
                         }
                     }
@@ -414,7 +460,9 @@ async fn process_sse_stream(
                     if let Some(text) = content_val.get("content").and_then(|v| v.as_str()) {
                         if !text.is_empty() && text != accumulated_text {
                             // Only emit the new delta portion
-                            if text.len() > accumulated_text.len() && text.starts_with(&accumulated_text as &str) {
+                            if text.len() > accumulated_text.len()
+                                && text.starts_with(&accumulated_text as &str)
+                            {
                                 let new_part = &text[accumulated_text.len()..];
                                 if !new_part.is_empty() {
                                     let normalized = new_part
@@ -438,24 +486,32 @@ async fn process_sse_stream(
 
                     // Collect server-side tool_calls if present
                     if let Some(content_val) = &chunk.content {
-                        if let Some(tc_arr) = content_val.get("tool_calls").and_then(|v| v.as_array()) {
+                        if let Some(tc_arr) =
+                            content_val.get("tool_calls").and_then(|v| v.as_array())
+                        {
                             if !tc_arr.is_empty() {
                                 tool_calls_pending = tc_arr.clone();
 
                                 // Emit tool-call-started events for UI display (read-only)
                                 for (idx, tc) in tc_arr.iter().enumerate() {
                                     let name = tc["function"]["name"].as_str().unwrap_or("?");
-                                    let _ = app_handle.emit("tool-call-started", serde_json::json!({
-                                        "index": idx,
-                                        "id": tc["id"].as_str().unwrap_or(""),
-                                        "name": name,
-                                        "naparnik": true
-                                    }));
-                                    let _ = app_handle.emit("tool-call-completed", serde_json::json!({
-                                        "id": tc["id"].as_str().unwrap_or(""),
-                                        "status": "naparnik",
-                                        "result": ""
-                                    }));
+                                    let _ = app_handle.emit(
+                                        "tool-call-started",
+                                        serde_json::json!({
+                                            "index": idx,
+                                            "id": tc["id"].as_str().unwrap_or(""),
+                                            "name": name,
+                                            "naparnik": true
+                                        }),
+                                    );
+                                    let _ = app_handle.emit(
+                                        "tool-call-completed",
+                                        serde_json::json!({
+                                            "id": tc["id"].as_str().unwrap_or(""),
+                                            "status": "naparnik",
+                                            "result": ""
+                                        }),
+                                    );
                                 }
 
                                 // Save current text segment before tool round

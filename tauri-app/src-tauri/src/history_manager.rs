@@ -1,6 +1,6 @@
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use lazy_static::lazy_static;
 
 #[derive(Debug, Clone)]
 pub struct CodeSnapshot {
@@ -21,7 +21,7 @@ pub async fn save_snapshot(hwnd: isize, code: String) {
         original_code: code,
         _timestamp: std::time::SystemTime::now(),
     });
-    
+
     // Keep only last 10 snapshots per window
     if list.len() > 10 {
         list.remove(0);

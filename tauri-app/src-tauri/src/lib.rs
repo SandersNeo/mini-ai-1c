@@ -6,24 +6,31 @@ mod ai;
 mod bsl_client;
 mod bsl_installer;
 mod commands;
-mod history_manager;
-mod logger;
 #[cfg(windows)]
 mod configurator;
 mod crypto;
-// Hotkeys removed
-// mod hotkeys;
-mod llm_profiles;
-mod llm;
+#[cfg(windows)]
+mod editor_bridge;
+#[cfg(windows)]
+mod editor_bridge_installer;
+mod history_manager;
 mod job_guard;
+mod llm;
+mod llm_profiles;
+mod logger;
 mod mcp_client;
+#[cfg(windows)]
+mod mouse_hook;
+#[cfg(windows)]
+mod scintilla;
+mod semantic_bridge;
 mod settings;
 
 use std::sync::Arc;
 
 use commands::*;
 
-use tauri::{Manager, tray::TrayIconBuilder};
+use tauri::{tray::TrayIconBuilder, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,8 +38,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_mcp_bridge::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .manage(Arc::new(tokio::sync::Mutex::new(crate::bsl_client::BSLClient::new())))
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["overlay"])
+                .build(),
+        )
+        .manage(Arc::new(tokio::sync::Mutex::new(
+            crate::bsl_client::BSLClient::new(),
+        )))
         .manage(crate::commands::ChatState::default())
         .invoke_handler(tauri::generate_handler![
             get_settings,
@@ -51,9 +64,17 @@ pub fn run() {
             format_bsl,
             find_configurator_windows_cmd,
             set_configurator_rdp_mode,
+            set_configurator_editor_bridge_enabled,
+            check_editor_bridge_status,
+            restart_editor_bridge_cmd,
+            install_editor_bridge_cmd,
             get_code_from_configurator,
             get_active_fragment_cmd,
+            get_editor_context_cmd,
+            get_configurator_apply_support_cmd,
+            diagnose_editor_bridge_cmd,
             check_selection_state,
+            sync_configurator_caret_to_point_cmd,
             paste_code_to_configurator,
             // Hotkeys
             // Hotkeys removed
@@ -74,6 +95,7 @@ pub fn run() {
             restart_app_cmd,
             // MCP
             get_mcp_tools,
+            list_mcp_tools,
             call_mcp_tool,
             test_mcp_connection,
             get_mcp_server_statuses,
@@ -92,8 +114,22 @@ pub fn run() {
             cli_refresh_usage,
             // 1С:Напарник
             clear_naparnik_session,
+            // Scintilla diagnostics
+            probe_scintilla,
+            // Overlay / Quick Actions
+            show_overlay,
+            overlay_ready,
+            get_pending_overlay_state,
+            update_overlay_state,
+            resize_overlay,
+            hide_overlay,
+            show_hidden_overlay,
+            emit_to_main,
+            open_diff_from_overlay,
+            focus_main_window_for_overlay_chat,
+            set_main_window_always_on_top,
+            quick_chat_invoke,
         ])
-
         .setup(|app| {
             // Setup Tray Icon
             let _tray = TrayIconBuilder::new()
@@ -107,7 +143,11 @@ pub fn run() {
                 let old_dir = roaming.join("com.miniai1c.agent");
                 let new_dir = roaming.join("com.mini-ai-1c");
                 if old_dir.exists() && old_dir.is_dir() {
-                    crate::app_log!("[MIGRATE] Migrating app data from {:?} to {:?}", old_dir, new_dir);
+                    crate::app_log!(
+                        "[MIGRATE] Migrating app data from {:?} to {:?}",
+                        old_dir,
+                        new_dir
+                    );
                     if let Err(e) = migrate_dir(&old_dir, &new_dir) {
                         crate::app_log!("[MIGRATE] Migration error: {}", e);
                     } else {
@@ -130,25 +170,46 @@ pub fn run() {
             // Start settings watcher for reactive MCP
             crate::mcp_client::start_settings_watcher(app.handle().clone());
 
+            // Install global mouse hook to detect right-click on 1C Configurator
+            #[cfg(windows)]
+            crate::mouse_hook::install_mouse_hook(app.handle().clone());
+
+            #[cfg(windows)]
+            {
+                let current_settings = crate::settings::load_settings();
+                crate::configurator::set_rdp_mode(current_settings.configurator.rdp_mode);
+                crate::mouse_hook::set_editor_bridge_enabled(
+                    current_settings.configurator.editor_bridge_enabled,
+                );
+            }
+
+            #[cfg(windows)]
+            crate::editor_bridge::start_watchdog();
+
             tauri::async_runtime::spawn(async move {
                 // Wait a bit for app to fully start
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                
-                let client_arc = app_handle.state::<Arc<tokio::sync::Mutex<crate::bsl_client::BSLClient>>>();
+
+                let client_arc =
+                    app_handle.state::<Arc<tokio::sync::Mutex<crate::bsl_client::BSLClient>>>();
                 let client_inner = client_arc.inner().clone();
-                crate::mcp_client::McpManager::register_internal_handler("bsl-ls", Arc::new(crate::bsl_client::BSLMcpHandler::new(client_inner.clone()))).await;
-                
+                crate::mcp_client::McpManager::register_internal_handler(
+                    "bsl-ls",
+                    Arc::new(crate::bsl_client::BSLMcpHandler::new(client_inner.clone())),
+                )
+                .await;
+
                 let mut client = client_inner.lock().await;
-                
+
                 if let Err(e) = client.start_server() {
                     crate::app_log!(force: true, "Failed to start BSL LS: {}", e);
                 } else {
                     crate::app_log!("BSL LS started");
                     // Try to connect immediately
                     if let Err(e) = client.connect().await {
-                         crate::app_log!(force: true, "Failed to connect to BSL LS: {}", e);
+                        crate::app_log!(force: true, "Failed to connect to BSL LS: {}", e);
                     } else {
-                         crate::app_log!("BSL LS connected");
+                        crate::app_log!("BSL LS connected");
                     }
                 }
             });

@@ -42,21 +42,24 @@ Your goal is to make **Targeted Edits** using strictly XML-based diff format.
 [/RULES]
 "#;
 
-
 /// Helper to detect target language based on message content
 pub fn detect_target_lang(messages: &[ApiMessage]) -> String {
     for msg in messages.iter().rev() {
         if msg.role == "user" {
             let clean_text: String = if let Some(content) = &msg.content {
-                content.lines()
+                content
+                    .lines()
                     .filter(|l| !l.trim().starts_with('/'))
                     .collect::<Vec<_>>()
                     .join(" ")
             } else {
                 "".to_string()
             };
-            
-            if clean_text.chars().any(|c| c >= '\u{0400}' && c <= '\u{04FF}') {
+
+            if clean_text
+                .chars()
+                .any(|c| c >= '\u{0400}' && c <= '\u{04FF}')
+            {
                 return "Russian".to_string();
             }
             break;
@@ -93,22 +96,26 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
     let settings = load_settings();
     let custom = &settings.custom_prompts;
     let code_gen = &settings.code_generation;
-    
+
     let mut prompt = String::new();
     let target_lang = detect_target_lang(messages);
-    
+
     match code_gen.behavior_preset {
         PromptBehaviorPreset::Project => {
             prompt.push_str("Ты - эксперт-разработчик 1С. Твоя задача - писать чистый, поддерживаемый код, следуя стандартам 1С и БСП. Можешь исправлять ошибки и предлагать оптимальные решения в рамках запроса.\n\n");
-        },
+        }
         PromptBehaviorPreset::Maintenance => {
             prompt.push_str("Ты - специалист по поддержке 1С. Твоя ГЛАВНАЯ задача - вносить точечные изменения в существующий (возможно, чужой или типовой) код. НИКОГДА не проводи рефакторинг и не меняй логику, которую не просили затронуть.\n\n");
             prompt.push_str("КРИТИЧЕСКОЕ ПРАВИЛО: Все свои изменения (добавление, изменение или удаление кода) ты обязан изолировать комментариями. НИКОГДА не удаляй существующие комментарии и копирайты.\n\n");
-        },
+        }
     }
-    
+
     let has_code = has_code_context(messages);
-    let code_rules = if has_code { DIFF_FORMAT_INSTRUCTIONS } else { "" };
+    let code_rules = if has_code {
+        DIFF_FORMAT_INSTRUCTIONS
+    } else {
+        ""
+    };
 
     let edit_mode_instructions = if has_code {
         r#"РЕЖИМ ОТВЕТА НА ВОПРОСЫ (СТРОГИЙ ПРИОРИТЕТ):
@@ -171,17 +178,20 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
         let now = chrono::Local::now();
         let date_str = now.format("%Y-%m-%d").to_string();
         let datetime_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
-        
-        let addition_marker = code_gen.addition_marker_template
+
+        let addition_marker = code_gen
+            .addition_marker_template
             .replace("{datetime}", &datetime_str)
             .replace("{date}", &date_str);
-        let modification_marker = code_gen.modification_marker_template
+        let modification_marker = code_gen
+            .modification_marker_template
             .replace("{datetime}", &datetime_str)
             .replace("{date}", &date_str);
-        let deletion_marker = code_gen.deletion_marker_template
+        let deletion_marker = code_gen
+            .deletion_marker_template
             .replace("{datetime}", &datetime_str)
             .replace("{date}", &date_str);
-        
+
         match code_gen.behavior_preset {
             PromptBehaviorPreset::Maintenance => {
                 prompt.push_str("\n\n=== ПРАВИЛА ИЗОЛЯЦИИ ИЗМЕНЕНИЙ (MAINTENANCE) ===\n");
@@ -191,7 +201,10 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
                     if addition_marker.contains("{newCode}") {
                         addition_marker.replace("{newCode}", "<твой новый код>")
                     } else {
-                        format!("Оборачивай в:\n{}\n<твой код>\n// Доработка END", addition_marker)
+                        format!(
+                            "Оборачивай в:\n{}\n<твой код>\n// Доработка END",
+                            addition_marker
+                        )
                     }
                 ));
                 prompt.push_str(&format!(
@@ -199,7 +212,10 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
                     if modification_marker.contains("{newCode}") {
                         modification_marker.replace("{newCode}", "<твой новый исправленный код>")
                     } else {
-                        format!("Оборачивай в:\n{}\n<твой код>\n// Доработка END", modification_marker)
+                        format!(
+                            "Оборачивай в:\n{}\n<твой код>\n// Доработка END",
+                            modification_marker
+                        )
                     }
                 ));
                 if modification_marker.contains("{oldCode}") {
@@ -213,14 +229,16 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
                         format!("{} (ниже следует закомментированный код)", deletion_marker)
                     }
                 ));
-                if addition_marker.contains("{newCode}") || modification_marker.contains("{newCode}") {
+                if addition_marker.contains("{newCode}")
+                    || modification_marker.contains("{newCode}")
+                {
                     prompt.push_str("ВАЖНО: Если шаблон содержит {newCode}, ты ОБЯЗАН вставить свой код ровно на место этого токена.\n");
                 }
                 if deletion_marker.contains("{oldCode}") {
                     prompt.push_str("ВАЖНО: Если шаблон удаления содержит {oldCode}, ты ОБЯЗАН заменить его на закомментированный текст удаляемого кода.\n");
                 }
                 prompt.push_str("НИКОГДА не удаляй код бесследно. Всегда изолируй изменения или комментируй удаляемое.\n");
-            },
+            }
             PromptBehaviorPreset::Project => {
                 prompt.push_str("\n\n=== ПРАВИЛА МАРКИРОВКИ ИЗМЕНЕНИЙ ===\n");
                 prompt.push_str("При необходимости маркировки используй комментарий в конце измененных строк или отдельной строкой выше.\n");
@@ -237,23 +255,21 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
         prompt.push_str("\n\n=== ПОЛЬЗОВАТЕЛЬСКИЕ ИНСТРУКЦИИ ДЛЯ ИЗМЕНЕНИЯ КОДА ===\n");
         prompt.push_str(&custom.on_code_change);
     }
-    
+
     if !custom.on_code_generate.is_empty() {
         prompt.push_str("\n\n=== ПОЛЬЗОВАТЕЛЬСКИЕ ИНСТРУКЦИИ ДЛЯ ГЕНЕРАЦИИ КОДА ===\n");
         prompt.push_str(&custom.on_code_generate);
     }
-    
-    let active_templates: Vec<_> = custom.templates.iter()
-        .filter(|t| t.enabled)
-        .collect();
-    
+
+    let active_templates: Vec<_> = custom.templates.iter().filter(|t| t.enabled).collect();
+
     if !active_templates.is_empty() {
         prompt.push_str("\n\n=== АКТИВНЫЕ ШАБЛОНЫ ===\n");
         for template in active_templates {
             prompt.push_str(&format!("- {}\n{}\n", template.name, template.content));
         }
     }
-    
+
     if !available_tools.is_empty() {
         prompt.push_str("\n\nВАЖНО: Тебе доступны следующие специализированные инструменты MCP:\n");
         for info in available_tools {
@@ -263,18 +279,33 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
             } else {
                 &tool.function.description
             };
-            prompt.push_str(&format!("- `{}` (сервер: {}): {}\n", tool.function.name, info.server_id, desc));
+            prompt.push_str(&format!(
+                "- `{}` (сервер: {}): {}\n",
+                tool.function.name, info.server_id, desc
+            ));
         }
 
         prompt.push_str("\nКРИТИЧЕСКИЕ ПРАВИЛА ИСПОЛЬЗОВАНИЯ ИНСТРУМЕНТОВ:\n");
-        
-        if available_tools.iter().any(|t| t.tool.function.name == "check_bsl_syntax") {
-            prompt.push_str("1. `check_bsl_syntax` (сервер bsl-ls): Используй для анализа и самопроверки.\n");
+
+        if available_tools
+            .iter()
+            .any(|t| t.tool.function.name == "check_bsl_syntax")
+        {
+            prompt.push_str(
+                "1. `check_bsl_syntax` (сервер bsl-ls): Используй для анализа и самопроверки.\n",
+            );
             prompt.push_str("\n");
-            prompt.push_str("   РЕЖИМ А — Самопроверка (ИИ проверяет свои собственные изменения):\n");
-            prompt.push_str("   - Зона ответственности: ТОЛЬКО строки, которые ты сам добавил или изменил.\n");
-            prompt.push_str("   - ЗАПРЕТ: не трогай ошибки в окружающем Legacy-коде, даже в той же функции.\n");
-            prompt.push_str("   - 'Cognitive Complexity', 'Magic Number' в старом коде — ИГНОРИРУЙ.\n");
+            prompt
+                .push_str("   РЕЖИМ А — Самопроверка (ИИ проверяет свои собственные изменения):\n");
+            prompt.push_str(
+                "   - Зона ответственности: ТОЛЬКО строки, которые ты сам добавил или изменил.\n",
+            );
+            prompt.push_str(
+                "   - ЗАПРЕТ: не трогай ошибки в окружающем Legacy-коде, даже в той же функции.\n",
+            );
+            prompt.push_str(
+                "   - 'Cognitive Complexity', 'Magic Number' в старом коде — ИГНОРИРУЙ.\n",
+            );
             prompt.push_str("   - Исправляй ТОЛЬКО критические синтаксические ошибки (забытая скобка и т.п.).\n");
             prompt.push_str("\n");
             prompt.push_str("   РЕЖИМ Б — Выполнение явного запроса пользователя:\n");
@@ -284,14 +315,20 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
             prompt.push_str("   - В этом режиме исправляй ВСЕ указанные пользователем проблемы, включая Legacy-код.\n");
             prompt.push_str("   - НЕ отказывайся со ссылкой на правила Legacy — пользователь осознанно просит изменения.\n");
         }
-        
-        if available_tools.iter().any(|t| t.tool.function.name == "ask_1c_ai") {
+
+        if available_tools
+            .iter()
+            .any(|t| t.tool.function.name == "ask_1c_ai")
+        {
             prompt.push_str("2. `ask_1c_ai` (сервер \"Напарник\" / 1C:Naparnik): Это инструмент для поиска в информационной системе 1С:ИТС.\n");
             prompt.push_str("   - При команде /итс или запросе про ИТС — ВСЕГДА вызывай `ask_1c_ai` напрямую, не раздумывая.\n");
             prompt.push_str("   - Также используй для консультаций по стандартам 1С и БСП.\n");
         }
 
-        if available_tools.iter().any(|t| t.server_id == "builtin-1c-help") {
+        if available_tools
+            .iter()
+            .any(|t| t.server_id == "builtin-1c-help")
+        {
             prompt.push_str(r#"
 3. `1С:Справка` (сервер builtin-1c-help): ЭТАЛОН СИНТАКСИСА И ОБЪЕКТНОЙ МОДЕЛИ.
    - Используй `search_1c_help` и `get_1c_help_topic` как ГЛАВНЫЙ источник правды при написании кода.
@@ -301,11 +338,16 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
 "#);
         }
 
-        if available_tools.iter().any(|t| t.tool.function.name.contains("metadata")) {
+        if available_tools
+            .iter()
+            .any(|t| t.tool.function.name.contains("metadata"))
+        {
             prompt.push_str("4. Инструменты метаданных: ВСЕГДА проверяй структуру объектов перед написанием запросов или обращению к полям через точку, чтобы избежать ошибок 'Поле объекта не обнаружено'.\n");
         }
 
-        let has_search = available_tools.iter().any(|t| t.server_id == "builtin-1c-search");
+        let has_search = available_tools
+            .iter()
+            .any(|t| t.server_id == "builtin-1c-search");
         if has_search {
             prompt.push_str(r#"
 === ИНСТРУМЕНТЫ ПОИСКА ПО КОНФИГУРАЦИИ 1С (builtin-1c-search) ===

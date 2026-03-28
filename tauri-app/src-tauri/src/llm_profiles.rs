@@ -85,6 +85,20 @@ impl LLMProfile {
         decrypt_string(&self.api_key_encrypted).unwrap_or_default()
     }
 
+    /// Get decrypted API key with an explicit error when the saved value can't be decrypted.
+    pub fn try_get_api_key(&self) -> Result<String, String> {
+        if self.api_key_encrypted.is_empty() {
+            return Ok(String::new());
+        }
+
+        decrypt_string(&self.api_key_encrypted).map_err(|_| {
+            format!(
+                "Не удалось расшифровать сохраненный API key для профиля '{}'. Сохраните ключ заново в настройках.",
+                self.name
+            )
+        })
+    }
+
     /// Set and encrypt API key
     pub fn set_api_key(&mut self, api_key: &str) {
         self.api_key_encrypted = encrypt_string(api_key).unwrap_or_default();
@@ -92,12 +106,15 @@ impl LLMProfile {
 
     /// Get base URL with default fallback
     pub fn get_base_url(&self) -> String {
-        self.base_url.clone().unwrap_or_else(|| {
-            match self.provider {
+        self.base_url
+            .clone()
+            .unwrap_or_else(|| match self.provider {
                 LLMProvider::OpenAI => "https://api.openai.com/v1".to_string(),
                 LLMProvider::Anthropic => "https://api.anthropic.com/v1".to_string(),
                 LLMProvider::OpenRouter => "https://openrouter.ai/api/v1".to_string(),
-                LLMProvider::Google => "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                LLMProvider::Google => {
+                    "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
+                }
                 LLMProvider::DeepSeek => "https://api.deepseek.com/v1".to_string(),
                 LLMProvider::Groq => "https://api.groq.com/openai/v1".to_string(),
                 LLMProvider::Mistral => "https://api.mistral.ai/v1".to_string(),
@@ -109,8 +126,7 @@ impl LLMProfile {
                 LLMProvider::Custom => String::new(),
                 LLMProvider::QwenCli => "https://chat.qwen.ai/api/v1".to_string(),
                 LLMProvider::OneCNaparnik => "https://code.1c.ai".to_string(),
-            }
-        })
+            })
     }
 }
 
@@ -130,34 +146,34 @@ pub fn load_profiles() -> ProfileStore {
     let path = get_profiles_file();
     if path.exists() {
         match fs::read_to_string(&path) {
-            Ok(content) => {
-                match serde_json::from_str::<ProfileStore>(&content) {
-                    Ok(mut store) => {
-                        let mut changed = false;
-                        for profile in &mut store.profiles {
-                            if matches!(profile.provider, LLMProvider::QwenCli) && (profile.temperature - 0.7).abs() < f32::EPSILON {
-                                crate::app_log!(force: true, "[LLM Profiles] Migrating QwenCli profile '{}' temperature from 0.7 to 0.1", profile.name);
-                                profile.temperature = 0.1;
-                                changed = true;
-                            }
+            Ok(content) => match serde_json::from_str::<ProfileStore>(&content) {
+                Ok(mut store) => {
+                    let mut changed = false;
+                    for profile in &mut store.profiles {
+                        if matches!(profile.provider, LLMProvider::QwenCli)
+                            && (profile.temperature - 0.7).abs() < f32::EPSILON
+                        {
+                            crate::app_log!(force: true, "[LLM Profiles] Migrating QwenCli profile '{}' temperature from 0.7 to 0.1", profile.name);
+                            profile.temperature = 0.1;
+                            changed = true;
                         }
-                        
-                        if changed {
-                            let _ = save_profiles(&store);
-                        }
+                    }
 
-                        if store.profiles.is_empty() {
-                            store.profiles.push(LLMProfile::default_profile());
-                            store.active_profile_id = "default".to_string();
-                        }
-                        store
+                    if changed {
+                        let _ = save_profiles(&store);
                     }
-                    Err(e) => {
-                        crate::app_log!(force: true, "[LLM Profiles] Failed to parse profiles file: {}. Creating defaults.", e);
-                        create_default_store()
+
+                    if store.profiles.is_empty() {
+                        store.profiles.push(LLMProfile::default_profile());
+                        store.active_profile_id = "default".to_string();
                     }
+                    store
                 }
-            }
+                Err(e) => {
+                    crate::app_log!(force: true, "[LLM Profiles] Failed to parse profiles file: {}. Creating defaults.", e);
+                    create_default_store()
+                }
+            },
             Err(e) => {
                 crate::app_log!(force: true, "[LLM Profiles] Failed to read profiles file: {}. Creating defaults.", e);
                 create_default_store()
@@ -179,18 +195,18 @@ fn create_default_store() -> ProfileStore {
 pub fn save_profiles(store: &ProfileStore) -> Result<(), String> {
     let dir = get_settings_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    
+
     let path = get_profiles_file();
-    let content = serde_json::to_string_pretty(store)
-        .map_err(|e| e.to_string())?;
-    
+    let content = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
+
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
 /// Get active profile
 pub fn get_active_profile() -> Option<LLMProfile> {
     let store = load_profiles();
-    store.profiles
+    store
+        .profiles
         .into_iter()
         .find(|p| p.id == store.active_profile_id)
 }

@@ -28,13 +28,14 @@ tauri-app/mcp-1c-search/**/target/
 *.suo
 *.sln
 *.sw?
-
+.cursor/
 # Project specifics
 _archive/
 specs/
 temp/
 *.tmp
 temp_*.bsl
+memory-bank/
 
 # Sensitive info
 .env
@@ -56,3 +57,12 @@ memory/
 tauri-app/src-tauri/bin/mcp-1c-search-x86_64-pc-windows-msvc.exe
 tauri-app/mcp-1c-search/tree-sitter-bsl/
 tauri-app/mcp-1c-search/tree-sitter-bsl-local/
+tauri-app/src-tauri/editor-bridge/*.py
+
+
+tauri-app/src-tauri/editor-bridge/EditorBridge.exe
+tauri-app/src-tauri/editor-bridge/EditorBridge.dll
+tauri-app/src-tauri/editor-bridge/EditorBridge.deps.json
+tauri-app/src-tauri/editor-bridge/EditorBridge.runtimeconfig.json
+tauri-app/src-tauri/editor-bridge/Interop.UIAutomationClient.dll
+1c_mcp_ext/*.md

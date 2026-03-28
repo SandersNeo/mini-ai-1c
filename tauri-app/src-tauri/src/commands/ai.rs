@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
 use crate::ai::{extract_bsl_code, stream_chat_completion, ApiMessage};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Simplified tool call structure from frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,13 +56,22 @@ const MAX_TOOL_RESULT_CHARS: usize = 8000;
 
 /// Estimates token count for a slice of messages (chars / 4 approximation).
 fn estimate_tokens(messages: &[ApiMessage]) -> usize {
-    messages.iter().map(|m| {
-        let content_len = m.content.as_deref().map(|c| c.len()).unwrap_or(0);
-        let tc_len = m.tool_calls.as_ref().map(|tc| {
-            tc.iter().map(|t| t.function.arguments.len() + t.function.name.len() + 10).sum::<usize>()
-        }).unwrap_or(0);
-        (content_len + tc_len) / 4
-    }).sum()
+    messages
+        .iter()
+        .map(|m| {
+            let content_len = m.content.as_deref().map(|c| c.len()).unwrap_or(0);
+            let tc_len = m
+                .tool_calls
+                .as_ref()
+                .map(|tc| {
+                    tc.iter()
+                        .map(|t| t.function.arguments.len() + t.function.name.len() + 10)
+                        .sum::<usize>()
+                })
+                .unwrap_or(0);
+            (content_len + tc_len) / 4
+        })
+        .sum()
 }
 
 /// Prunes old tool-call rounds from the context to keep it under `max_tokens`.
@@ -108,12 +117,19 @@ fn prune_tool_context(messages: &mut Vec<ApiMessage>, max_tokens: usize) {
         let (start, end) = rounds[idx];
         let actual_start = start.saturating_sub(removed_total);
         let actual_end = end.saturating_sub(removed_total);
-        if actual_end >= messages.len() { break; }
+        if actual_end >= messages.len() {
+            break;
+        }
         let count = actual_end - actual_start + 1;
         messages.drain(actual_start..=actual_end);
         removed_total += count;
-        crate::app_log!("[AI][PRUNE] Removed tool round (was [{},{}]), {} msgs pruned total. Tokens now ~{}t",
-            start, end, removed_total, estimate_tokens(messages));
+        crate::app_log!(
+            "[AI][PRUNE] Removed tool round (was [{},{}]), {} msgs pruned total. Tokens now ~{}t",
+            start,
+            end,
+            removed_total,
+            estimate_tokens(messages)
+        );
         if estimate_tokens(messages) <= max_tokens {
             break;
         }
@@ -124,7 +140,10 @@ fn prune_tool_context(messages: &mut Vec<ApiMessage>, max_tokens: usize) {
 #[tauri::command]
 pub async fn clear_naparnik_session() -> Result<(), String> {
     if let Some(profile) = crate::llm_profiles::get_active_profile() {
-        if matches!(profile.provider, crate::llm_profiles::LLMProvider::OneCNaparnik) {
+        if matches!(
+            profile.provider,
+            crate::llm_profiles::LLMProvider::OneCNaparnik
+        ) {
             crate::ai::naparnik_client::clear_naparnik_session(&profile.id);
         }
     }
@@ -155,12 +174,9 @@ pub async fn stop_chat(
     Ok(())
 }
 
-
 /// Approve the pending tool call
 #[tauri::command]
-pub async fn approve_tool(
-    state: tauri::State<'_, ChatState>,
-) -> Result<(), String> {
+pub async fn approve_tool(state: tauri::State<'_, ChatState>) -> Result<(), String> {
     let guard = state.approval_tx.lock().await;
     if let Some(tx) = &*guard {
         let _ = tx.send(true).await;
@@ -172,9 +188,7 @@ pub async fn approve_tool(
 
 /// Reject the pending tool call
 #[tauri::command]
-pub async fn reject_tool(
-    state: tauri::State<'_, ChatState>,
-) -> Result<(), String> {
+pub async fn reject_tool(state: tauri::State<'_, ChatState>) -> Result<(), String> {
     let guard = state.approval_tx.lock().await;
     if let Some(tx) = &*guard {
         let _ = tx.send(false).await;
@@ -228,14 +242,16 @@ pub async fn stream_chat(
         .map(|m| {
             // Convert frontend tool_calls to backend ToolCall format
             let tool_calls = m.tool_calls.map(|tcs| {
-                tcs.into_iter().map(|tc| crate::ai::models::ToolCall {
-                    id: tc.id,
-                    r#type: tc.r#type,
-                    function: crate::ai::models::ToolCallFunction {
-                        name: tc.function.name,
-                        arguments: tc.function.arguments,
-                    },
-                }).collect::<Vec<_>>()
+                tcs.into_iter()
+                    .map(|tc| crate::ai::models::ToolCall {
+                        id: tc.id,
+                        r#type: tc.r#type,
+                        function: crate::ai::models::ToolCallFunction {
+                            name: tc.function.name,
+                            arguments: tc.function.arguments,
+                        },
+                    })
+                    .collect::<Vec<_>>()
             });
 
             ApiMessage {
@@ -255,12 +271,13 @@ pub async fn stream_chat(
 
     // Spawn the work into a cancellable task
     let task_app_handle = app_handle.clone();
-    
+
     let join_handle = tokio::spawn(async move {
         // 1. Initial status
         let _ = task_app_handle.emit("chat-status", "Инициализация...");
-        
-        let bsl_state = task_app_handle.state::<Arc<tokio::sync::Mutex<crate::bsl_client::BSLClient>>>();
+
+        let bsl_state =
+            task_app_handle.state::<Arc<tokio::sync::Mutex<crate::bsl_client::BSLClient>>>();
         let settings = crate::settings::load_settings();
 
         let max_iterations = settings.max_agent_iterations.unwrap_or(u32::MAX);
@@ -281,15 +298,16 @@ pub async fn stream_chat(
             prune_tool_context(&mut api_messages, CONTEXT_PRUNE_THRESHOLD);
 
             // Stream chat completion
-            let response_msg = stream_chat_completion(api_messages.clone(), task_app_handle.clone()).await;
-            
+            let response_msg =
+                stream_chat_completion(api_messages.clone(), task_app_handle.clone()).await;
+
             let assistant_msg = match response_msg {
                 Ok(m) => m,
                 Err(e) => {
                     return Err(e);
                 }
             };
-            
+
             // Add assistant response to history, truncating excess tool calls.
             // We modify the stored version so tool_call_ids match exactly what we'll execute.
             // Excess tool calls are dropped silently (no error messages that confuse the model).
@@ -297,8 +315,11 @@ pub async fn stream_chat(
                 let mut m = assistant_msg.clone();
                 if let Some(tc) = &mut m.tool_calls {
                     if tc.len() > MAX_PARALLEL_TOOL_CALLS {
-                        crate::app_log!("[AI][LOOP] Truncating tool_calls in history: {} → {}",
-                            tc.len(), MAX_PARALLEL_TOOL_CALLS);
+                        crate::app_log!(
+                            "[AI][LOOP] Truncating tool_calls in history: {} → {}",
+                            tc.len(),
+                            MAX_PARALLEL_TOOL_CALLS
+                        );
                         tc.truncate(MAX_PARALLEL_TOOL_CALLS);
                     }
                 }
@@ -308,17 +329,19 @@ pub async fn stream_chat(
 
             // 1. Check for tool calls (use original to get full count for UI)
             if let Some(tool_calls) = &assistant_msg.tool_calls {
-                let tool_calls_limited: Vec<_> = tool_calls.iter()
-                    .take(MAX_PARALLEL_TOOL_CALLS)
-                    .collect();
+                let tool_calls_limited: Vec<_> =
+                    tool_calls.iter().take(MAX_PARALLEL_TOOL_CALLS).collect();
                 let _ = task_app_handle.emit("chat-status", "Ожидаю подтверждения...");
-                let _ = task_app_handle.emit("waiting-for-approval", serde_json::json!({
-                    "count": tool_calls_limited.len()
-                }));
-                
+                let _ = task_app_handle.emit(
+                    "waiting-for-approval",
+                    serde_json::json!({
+                        "count": tool_calls_limited.len()
+                    }),
+                );
+
                 // Wait for approval signal
                 let approved = rx.recv().await.unwrap_or(false);
-                
+
                 if !approved {
                     let _ = task_app_handle.emit("chat-status", "Действие отклонено пользователем");
                     crate::app_log!("[AI][LOOP] Tool calls rejected by user");
@@ -335,19 +358,28 @@ pub async fn stream_chat(
                 }
 
                 let _ = task_app_handle.emit("chat-status", "Вызов MCP...");
-                crate::app_log!("[AI][LOOP] Processing {} tool calls (Approved)", tool_calls_limited.len());
+                crate::app_log!(
+                    "[AI][LOOP] Processing {} tool calls (Approved)",
+                    tool_calls_limited.len()
+                );
 
                 for tool_call in &tool_calls_limited {
                     let tool_name = &tool_call.function.name;
-                    let _ = task_app_handle.emit("chat-status", format!("Вызов MCP: {}...", tool_name));
-                    let arguments: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                        .unwrap_or(serde_json::json!({}));
-                    
-                    crate::app_log!("[AI][TOOL] Executing: {} with args: {}", tool_name, arguments);
+                    let _ =
+                        task_app_handle.emit("chat-status", format!("Вызов MCP: {}...", tool_name));
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
+
+                    crate::app_log!(
+                        "[AI][TOOL] Executing: {} with args: {}",
+                        tool_name,
+                        arguments
+                    );
 
                     let mut tool_result = "Error: Tool not found".to_string();
                     let mut all_configs = settings.mcp_servers.clone();
-                    
+
                     if !all_configs.iter().any(|c| c.id == "bsl-ls") {
                         all_configs.push(crate::settings::McpServerConfig {
                             id: "bsl-ls".to_string(),
@@ -359,12 +391,17 @@ pub async fn stream_chat(
                     }
 
                     for config in all_configs {
-                        if !config.enabled { continue; }
-                        
-                        if let Ok(client) = crate::mcp_client::McpClient::new(config.clone()).await {
+                        if !config.enabled {
+                            continue;
+                        }
+
+                        if let Ok(client) = crate::mcp_client::McpClient::new(config.clone()).await
+                        {
                             if let Ok(tools) = client.list_tools().await {
                                 let target_tool = tools.into_iter().find(|t| {
-                                    let sanitized = t.name.chars()
+                                    let sanitized = t
+                                        .name
+                                        .chars()
                                         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                                         .collect::<String>();
                                     sanitized == *tool_name
@@ -374,36 +411,47 @@ pub async fn stream_chat(
                                     match client.call_tool(&t.name, arguments.clone()).await {
                                         Ok(res) => {
                                             tool_result = res.to_string();
-                                            let _ = task_app_handle.emit("tool-call-completed", serde_json::json!({
-                                                "id": tool_call.id,
-                                                "status": "done",
-                                                "result": tool_result
-                                            }));
-                                        },
+                                            let _ = task_app_handle.emit(
+                                                "tool-call-completed",
+                                                serde_json::json!({
+                                                    "id": tool_call.id,
+                                                    "status": "done",
+                                                    "result": tool_result
+                                                }),
+                                            );
+                                        }
                                         Err(e) => {
                                             tool_result = format!("Error calling tool: {}", e);
-                                            let _ = task_app_handle.emit("tool-call-completed", serde_json::json!({
-                                                "id": tool_call.id,
-                                                "status": "error",
-                                                "result": tool_result
-                                            }));
-                                        },
+                                            let _ = task_app_handle.emit(
+                                                "tool-call-completed",
+                                                serde_json::json!({
+                                                    "id": tool_call.id,
+                                                    "status": "error",
+                                                    "result": tool_result
+                                                }),
+                                            );
+                                        }
                                     }
                                     break;
                                 }
                             }
                         }
                     }
-                    
+
                     // Truncate large tool results to prevent context explosion
                     if tool_result.len() > MAX_TOOL_RESULT_CHARS {
                         // Find last valid UTF-8 char boundary at or before the byte limit
-                        let boundary = (0..=MAX_TOOL_RESULT_CHARS).rev()
+                        let boundary = (0..=MAX_TOOL_RESULT_CHARS)
+                            .rev()
                             .find(|&i| tool_result.is_char_boundary(i))
                             .unwrap_or(0);
                         tool_result.truncate(boundary);
                         tool_result.push_str("\n... [результат усечён]");
-                        crate::app_log!("[AI][TOOL] Result truncated to {}b for {}", boundary, tool_name);
+                        crate::app_log!(
+                            "[AI][TOOL] Result truncated to {}b for {}",
+                            boundary,
+                            tool_name
+                        );
                     }
                     api_messages.push(ApiMessage {
                         role: "tool".to_string(),
@@ -482,10 +530,9 @@ pub async fn stream_chat(
             }
 
             let _ = task_app_handle.emit("chat-status", "Проверка BSL кода...");
-            
-            let validation_result = tokio::time::timeout(
-                tokio::time::Duration::from_secs(30),
-                async {
+
+            let validation_result =
+                tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
                     // Проверяем подключение один раз до цикла
                     {
                         let mut client = bsl_state.lock().await;
@@ -508,10 +555,11 @@ pub async fn stream_chat(
                             Ok(diagnostics) => {
                                 for d in &diagnostics {
                                     let msg_lower = d.message.to_lowercase();
-                                    if msg_lower.contains("каноническ") ||
-                                       msg_lower.contains("пробел") ||
-                                       msg_lower.contains("canonical") ||
-                                       msg_lower.contains("comments") {
+                                    if msg_lower.contains("каноническ")
+                                        || msg_lower.contains("пробел")
+                                        || msg_lower.contains("canonical")
+                                        || msg_lower.contains("comments")
+                                    {
                                         continue;
                                     }
 
@@ -527,13 +575,21 @@ pub async fn stream_chat(
                                     });
                                 }
 
-                                let errors: Vec<crate::bsl_client::Diagnostic> = diagnostics.into_iter()
+                                let errors: Vec<crate::bsl_client::Diagnostic> = diagnostics
+                                    .into_iter()
                                     .filter(|d| d.severity == Some(1))
                                     .collect();
 
                                 if !errors.is_empty() {
-                                    let error_str = errors.iter()
-                                        .map(|e| format!("- Line {}: {}", e.range.start.line + 1, e.message))
+                                    let error_str = errors
+                                        .iter()
+                                        .map(|e| {
+                                            format!(
+                                                "- Line {}: {}",
+                                                e.range.start.line + 1,
+                                                e.message
+                                            )
+                                        })
                                         .collect::<Vec<_>>()
                                         .join("\n");
                                     all_errors.push(format!("Block {}:\n{}", idx + 1, error_str));
@@ -543,13 +599,14 @@ pub async fn stream_chat(
                         }
                     }
                     (all_errors, ui_diagnostics)
-                }
-            ).await;
+                })
+                .await;
 
             let (all_errors, ui_diagnostics) = match validation_result {
                 Ok(res) => res,
                 Err(_) => {
-                    let _ = task_app_handle.emit("chat-status", "Ошибка проверки кода: Таймаут (30с)");
+                    let _ =
+                        task_app_handle.emit("chat-status", "Ошибка проверки кода: Таймаут (30с)");
                     break;
                 }
             };
@@ -558,7 +615,9 @@ pub async fn stream_chat(
 
             if all_errors.is_empty() {
                 if let Ok(interrupt_msg) = interrupt_rx.try_recv() {
-                    crate::app_log!("[AI][INTERRUPT] Injecting user message after BSL-clean response");
+                    crate::app_log!(
+                        "[AI][INTERRUPT] Injecting user message after BSL-clean response"
+                    );
                     let _ = task_app_handle.emit("chat-interrupt-injected", &interrupt_msg);
                     let wrapped = format!(
                         "[СТОП. ПОЛЬЗОВАТЕЛЬ ПРЕРВАЛ ТЕКУЩУЮ ЗАДАЧУ]\n\n{}\n\n[Немедленно прекрати текущую задачу. Ответь пользователю на его сообщение выше.]",
@@ -617,10 +676,10 @@ pub async fn stream_chat(
         Ok(res) => res,
         Err(e) => {
             if e.is_cancelled() {
-                 let _ = app_handle.emit("chat-status", "");
-                 Err("Cancelled".to_string())
+                let _ = app_handle.emit("chat-status", "");
+                Err("Cancelled".to_string())
             } else {
-                 Err(format!("Task panic: {}", e))
+                Err(format!("Task panic: {}", e))
             }
         }
     };

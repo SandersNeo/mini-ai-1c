@@ -11,5 +11,8 @@
         "install-all": "npm install && npm install --workspace=tauri-app",
         "test:rust": "cd tauri-app/src-tauri && cargo test"
     },
-    "description": "Mini AI 1C - Root Workspace"
+    "description": "Mini AI 1C - Root Workspace",
+    "devDependencies": {
+        "puppeteer-core": "^24.40.0"
+    }
 }

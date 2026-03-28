@@ -1,15 +1,17 @@
-pub mod settings;
-pub mod profiles;
 pub mod ai;
-pub mod configurator;
 pub mod bsl;
-pub mod mcp;
 pub mod cli;
+pub mod configurator;
+pub mod mcp;
+pub mod overlay;
+pub mod profiles;
+pub mod settings;
 
-pub use settings::*;
-pub use profiles::*;
 pub use ai::*;
-pub use configurator::*;
 pub use bsl::*;
-pub use mcp::*;
 pub use cli::*;
+pub use configurator::*;
+pub use mcp::*;
+pub use overlay::*;
+pub use profiles::*;
+pub use settings::*;

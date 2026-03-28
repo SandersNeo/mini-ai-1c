@@ -11,7 +11,17 @@ pub fn get_settings() -> AppSettings {
 /// Save application settings
 #[tauri::command]
 pub fn save_settings(new_settings: AppSettings) -> Result<(), String> {
-    settings::save_settings(&new_settings)
+    settings::save_settings(&new_settings)?;
+
+    #[cfg(windows)]
+    {
+        crate::configurator::set_rdp_mode(new_settings.configurator.rdp_mode);
+        crate::mouse_hook::set_editor_bridge_enabled(
+            new_settings.configurator.editor_bridge_enabled,
+        );
+    }
+
+    Ok(())
 }
 
 /// Mark onboarding as completed
@@ -41,19 +51,15 @@ pub fn check_node_version_cmd() -> Option<String> {
     use std::process::Command;
 
     #[cfg(target_os = "windows")]
-    let output = Command::new("cmd")
-        .args(["/C", "node --version"])
-        .output();
+    let output = Command::new("cmd").args(["/C", "node --version"]).output();
 
     #[cfg(not(target_os = "windows"))]
-    let output = Command::new("node")
-        .arg("--version")
-        .output();
+    let output = Command::new("node").arg("--version").output();
 
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
-        }
+        Ok(o) if o.status.success() => String::from_utf8(o.stdout)
+            .ok()
+            .map(|s| s.trim().to_string()),
         _ => None,
     }
 }
@@ -62,17 +68,13 @@ pub fn check_node_version_cmd() -> Option<String> {
 #[tauri::command]
 pub fn check_java_cmd() -> bool {
     use std::process::Command;
-    
+
     // Try verification by running java -version
     #[cfg(target_os = "windows")]
-    let output = Command::new("cmd")
-        .args(["/C", "java -version"])
-        .output();
-        
+    let output = Command::new("cmd").args(["/C", "java -version"]).output();
+
     #[cfg(not(target_os = "windows"))]
-    let output = Command::new("java")
-        .arg("-version")
-        .output();
+    let output = Command::new("java").arg("-version").output();
 
     match output {
         Ok(o) => o.status.success(),

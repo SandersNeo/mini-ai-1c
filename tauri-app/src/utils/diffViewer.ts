@@ -85,16 +85,16 @@ function stringSimilarity(a: string, b: string): number {
     return 1 - levenshteinDistance(a, b) / maxLen;
 }
 
-function blockSimilarity(aLines: string[], bLines: string[]): number {
+function blockSimilarity(aLines: string[], bLines: string[], bTrimmedCache?: string[], bSetCache?: Set<string>, bTextCache?: string): number {
     const aTrimmed = aLines.map(l => l.trim());
-    const bTrimmed = bLines.map(l => l.trim());
+    const bTrimmed = bTrimmedCache || bLines.map(l => l.trim());
     const m = aTrimmed.length, n = bTrimmed.length;
     if (m === 0 && n === 0) return 1;
     if (m === 0 || n === 0) return 0;
 
     // Quick heuristic: count matching lines (ignoring order)
     let matchLines = 0;
-    const bSet = new Set(bTrimmed.filter(l => l.length > 0));
+    const bSet = bSetCache || new Set(bTrimmed.filter(l => l.length > 0));
     let aNonEmpty = 0;
     for (const line of aTrimmed) {
         if (line.length > 0) {
@@ -109,7 +109,7 @@ function blockSimilarity(aLines: string[], bLines: string[]): number {
     }
 
     const aText = aTrimmed.join('\n');
-    const bText = bTrimmed.join('\n');
+    const bText = bTextCache !== undefined ? bTextCache : bTrimmed.join('\n');
     return stringSimilarity(aText, bText);
 }
 
@@ -543,6 +543,11 @@ function applyBlock(
     let bestIdx = -1;
     let bestLen = searchLines.length;
 
+    // Cache for searchLines (bLines in blockSimilarity)
+    const searchTrimmedCache = searchLines.map(l => l.trim());
+    const searchSetCache = new Set(searchTrimmedCache.filter(l => l.length > 0));
+    const searchTextCache = searchTrimmedCache.join('\n');
+
     for (let len = minLen; len <= maxLen; len++) {
         for (let i = 0; i <= originalLines.length - len; i++) {
             // Пропускаем окна, пересекающиеся с уже применёнными диапазонами
@@ -552,7 +557,7 @@ function applyBlock(
             if (overlaps) continue;
 
             const windowLines = originalLines.slice(i, i + len);
-            const score = blockSimilarity(windowLines, searchLines);
+            const score = blockSimilarity(windowLines, searchLines, searchTrimmedCache, searchSetCache, searchTextCache);
 
             if (score > bestScore) {
                 bestScore = score;

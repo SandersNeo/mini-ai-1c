@@ -1,10 +1,10 @@
-use serde::Deserialize;
-use reqwest::Client;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chrono::{DateTime, Duration, Utc};
 use keyring::Entry;
-use chrono::{DateTime, Utc, Duration};
-use sha2::{Digest, Sha256};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
+use reqwest::Client;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::{CliAuthInitResponse, CliAuthStatus, CliStatus, CliUsage};
 
@@ -63,7 +63,8 @@ impl QwenCliProvider {
         params.insert("code_challenge", &code_challenge);
         params.insert("code_challenge_method", "S256");
 
-        let resp = client.post(AUTH_START_URL)
+        let resp = client
+            .post(AUTH_START_URL)
             .form(&params)
             .header("Accept", "application/json")
             .send()
@@ -76,7 +77,12 @@ impl QwenCliProvider {
         crate::app_log!(force: true, "[DEBUG] Qwen Auth Start response {}: {}", status, body);
 
         if !status.is_success() {
-            return Err(format!("Auth server error {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown"), body));
+            return Err(format!(
+                "Auth server error {} {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                body
+            ));
         }
 
         let data: QwenDeviceCodeResponse = serde_json::from_str(&body)
@@ -85,14 +91,19 @@ impl QwenCliProvider {
         Ok(CliAuthInitResponse {
             device_code: data.device_code,
             user_code: data.user_code,
-            verification_url: data.verification_uri_complete.unwrap_or(data.verification_uri),
+            verification_url: data
+                .verification_uri_complete
+                .unwrap_or(data.verification_uri),
             expires_in: data.expires_in,
             poll_interval: data.interval.unwrap_or(5),
             code_verifier: Some(code_verifier),
         })
     }
 
-    pub async fn auth_poll(device_code: &str, code_verifier: Option<&str>) -> Result<CliAuthStatus, String> {
+    pub async fn auth_poll(
+        device_code: &str,
+        code_verifier: Option<&str>,
+    ) -> Result<CliAuthStatus, String> {
         let client = Client::new();
 
         let mut params = std::collections::HashMap::new();
@@ -106,7 +117,8 @@ impl QwenCliProvider {
             params.insert("code_verifier", &verifier_owned);
         }
 
-        let resp = client.post(AUTH_TOKEN_URL)
+        let resp = client
+            .post(AUTH_TOKEN_URL)
             .form(&params)
             .header("Accept", "application/json")
             .send()
@@ -134,7 +146,8 @@ impl QwenCliProvider {
             let body = resp.text().await.unwrap_or_default();
             crate::app_log!(force: true, "[DEBUG] Qwen Auth Poll 400 Body: {}", body);
 
-            let err_data: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            let err_data: serde_json::Value =
+                serde_json::from_str(&body).map_err(|e| e.to_string())?;
             if let Some(err) = err_data.get("error").and_then(|e| e.as_str()) {
                 match err {
                     "authorization_pending" => Ok(CliAuthStatus::Pending),
@@ -153,7 +166,13 @@ impl QwenCliProvider {
 
     // ── Token storage (keyring) ───────────────────────────────────────────────
 
-    pub fn save_token(profile_id: &str, access_token: &str, refresh_token: Option<&str>, expires_at: u64, resource_url: Option<&str>) -> Result<(), String> {
+    pub fn save_token(
+        profile_id: &str,
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_at: u64,
+        resource_url: Option<&str>,
+    ) -> Result<(), String> {
         crate::app_log!(force: true, "[DEBUG] QwenCliProvider::save_token called for profile {}. Expires: {}, resource_url: {:?}", profile_id, expires_at, resource_url);
         let entry_name = format!("qwen-cli-{}", profile_id);
         let entry = Entry::new("mini-ai-1c", &entry_name).map_err(|e| e.to_string())?;
@@ -163,22 +182,35 @@ impl QwenCliProvider {
             "expires_at": expires_at,
             "resource_url": resource_url
         });
-        entry.set_password(&data.to_string()).map_err(|e| e.to_string())?;
+        entry
+            .set_password(&data.to_string())
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub fn get_token(profile_id: &str) -> Result<Option<(String, Option<String>, u64, Option<String>)>, String> {
+    pub fn get_token(
+        profile_id: &str,
+    ) -> Result<Option<(String, Option<String>, u64, Option<String>)>, String> {
         let entry_name = format!("qwen-cli-{}", profile_id);
         let entry = Entry::new("mini-ai-1c", &entry_name).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(pwd) => {
-                let data: serde_json::Value = serde_json::from_str(&pwd).map_err(|e| e.to_string())?;
-                let access_token = data["access_token"].as_str().ok_or("No access token")?.to_string();
+                let data: serde_json::Value =
+                    serde_json::from_str(&pwd).map_err(|e| e.to_string())?;
+                let access_token = data["access_token"]
+                    .as_str()
+                    .ok_or("No access token")?
+                    .to_string();
                 let refresh_token = data["refresh_token"].as_str().map(|s| s.to_string());
                 let expires_at = data["expires_at"].as_u64().ok_or("No expires_at")?;
                 let resource_url = data["resource_url"].as_str().map(|s| s.to_string());
-                Ok(Some((access_token, refresh_token, expires_at, resource_url)))
-            },
+                Ok(Some((
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    resource_url,
+                )))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
@@ -194,7 +226,8 @@ impl QwenCliProvider {
 
         crate::app_log!(force: true, "[DEBUG] Qwen: refreshing access token for profile {}", profile_id);
 
-        let resp = client.post(AUTH_TOKEN_URL)
+        let resp = client
+            .post(AUTH_TOKEN_URL)
             .form(&params)
             .header("Accept", "application/json")
             .send()
@@ -211,7 +244,11 @@ impl QwenCliProvider {
                 crate::app_log!(force: true, "[Qwen] Refresh token invalid (400), logging out profile {}", profile_id);
                 let _ = Self::logout(profile_id);
             }
-            return Err(format!("Token refresh failed {}: {}", status.as_u16(), body));
+            return Err(format!(
+                "Token refresh failed {}: {}",
+                status.as_u16(),
+                body
+            ));
         }
 
         let data: QwenTokenResponse = serde_json::from_str(&body)
@@ -310,7 +347,12 @@ impl QwenCliProvider {
 
     /// Called when the server provides rate-limit info via response headers.
     /// Overwrites the local counter with accurate server data.
-    pub fn save_usage(profile_id: &str, requests_used: u32, requests_limit: u32, resets_at: Option<String>) -> Result<(), String> {
+    pub fn save_usage(
+        profile_id: &str,
+        requests_used: u32,
+        requests_limit: u32,
+        resets_at: Option<String>,
+    ) -> Result<(), String> {
         let path = Self::usage_file_path(profile_id);
         let today = Utc::now().format("%Y-%m-%d").to_string();
 
@@ -328,7 +370,11 @@ impl QwenCliProvider {
         let tmp_path = path.with_extension("tmp");
         std::fs::write(&tmp_path, data.to_string()).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp_path, &path).map_err(|e| e.to_string())?;
-        crate::app_log!("[Qwen] Usage saved from server: {}/{}", requests_used, requests_limit);
+        crate::app_log!(
+            "[Qwen] Usage saved from server: {}/{}",
+            requests_used,
+            requests_limit
+        );
         Ok(())
     }
 
@@ -354,7 +400,11 @@ impl QwenCliProvider {
                                 let usage = Some(Self::get_local_usage(profile_id));
                                 return Ok(CliStatus {
                                     is_authenticated: true,
-                                    auth_expires_at: Some(DateTime::from_timestamp(new_expires_at as i64, 0).unwrap_or(Utc::now()).to_rfc3339()),
+                                    auth_expires_at: Some(
+                                        DateTime::from_timestamp(new_expires_at as i64, 0)
+                                            .unwrap_or(Utc::now())
+                                            .to_rfc3339(),
+                                    ),
                                     usage,
                                 });
                             }
@@ -367,7 +417,11 @@ impl QwenCliProvider {
                 }
                 return Ok(CliStatus {
                     is_authenticated: false,
-                    auth_expires_at: Some(DateTime::from_timestamp(expires_at as i64, 0).unwrap_or(Utc::now()).to_rfc3339()),
+                    auth_expires_at: Some(
+                        DateTime::from_timestamp(expires_at as i64, 0)
+                            .unwrap_or(Utc::now())
+                            .to_rfc3339(),
+                    ),
                     usage: None,
                 });
             }
@@ -375,7 +429,11 @@ impl QwenCliProvider {
             let usage = Some(Self::get_local_usage(profile_id));
             Ok(CliStatus {
                 is_authenticated: true,
-                auth_expires_at: Some(DateTime::from_timestamp(expires_at as i64, 0).unwrap_or(Utc::now()).to_rfc3339()),
+                auth_expires_at: Some(
+                    DateTime::from_timestamp(expires_at as i64, 0)
+                        .unwrap_or(Utc::now())
+                        .to_rfc3339(),
+                ),
                 usage,
             })
         } else {

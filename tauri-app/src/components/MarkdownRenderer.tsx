@@ -215,7 +215,7 @@ const CodeBlock = memo(({ inline, className, children, isStreaming, onApplyCode,
                                     title="Load into Side Panel"
                                 >
                                     <PanelRight className="w-3.5 h-3.5" />
-                                    <span>Apply</span>
+                                    <span>Применить</span>
                                 </button>
                             )}
                         </div>
@@ -260,7 +260,7 @@ const CodeBlock = memo(({ inline, className, children, isStreaming, onApplyCode,
                                         className="flex items-center gap-2 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all text-xs font-semibold shadow-lg shadow-blue-900/20"
                                     >
                                         <PanelRight className="w-4 h-4" />
-                                        <span>Apply Changes & Close</span>
+                                        <span>Применить и закрыть</span>
                                     </button>
                                 )}
                                 <button

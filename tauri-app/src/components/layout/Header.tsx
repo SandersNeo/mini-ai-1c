@@ -38,7 +38,15 @@ interface HeaderProps {
     onCodeLoaded: (code: string, isSelection: boolean) => void;
 }
 
-export function Header({ bslStatus, nodeAvailable, viewMode, onViewModeChange, onClearChat, onOpenSettings, onCodeLoaded }: HeaderProps) {
+export function Header({
+    bslStatus,
+    nodeAvailable,
+    viewMode,
+    onViewModeChange,
+    onClearChat,
+    onOpenSettings,
+    onCodeLoaded,
+}: HeaderProps) {
     const [isCompact, setIsCompact] = useState(false);
     const { snapToConfigurator } = useConfigurator();
     const { settings, updateSettings } = useSettings();

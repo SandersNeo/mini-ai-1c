@@ -1,11 +1,12 @@
-use std::sync::Mutex;
-use lazy_static::lazy_static;
+use super::models::{Tool, ToolFunction, ToolInfo};
 use crate::mcp_client::McpClient;
 use crate::settings::load_settings;
-use super::models::{ToolInfo, Tool, ToolFunction};
+use lazy_static::lazy_static;
+use std::sync::Mutex;
 
 lazy_static! {
-    pub static ref TOOLS_CACHE: Mutex<Option<(std::time::Instant, Vec<ToolInfo>)>> = Mutex::new(None);
+    pub static ref TOOLS_CACHE: Mutex<Option<(std::time::Instant, Vec<ToolInfo>)>> =
+        Mutex::new(None);
 }
 
 /// Collect all tools from enabled MCP servers to inject into LLM request
@@ -15,14 +16,19 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
     let mut seen_names = std::collections::HashSet::new();
 
     crate::app_log!("[MCP][TOOLS] Collecting tools...");
-    
+
     // Check cache first
     {
         if let Ok(cache) = TOOLS_CACHE.lock() {
             if let Some((time, tools)) = &*cache {
-                if time.elapsed().as_secs() < 120 { // 2 minute cache
+                if time.elapsed().as_secs() < 120 {
+                    // 2 minute cache
                     let duration = time.elapsed().as_millis();
-                    crate::app_log!("[MCP][CACHE] Using cached tools ({} items, {} ms ago)", tools.len(), duration);
+                    crate::app_log!(
+                        "[MCP][CACHE] Using cached tools ({} items, {} ms ago)",
+                        tools.len(),
+                        duration
+                    );
                     return tools.clone();
                 }
             }
@@ -32,7 +38,7 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
     let start_time = std::time::Instant::now();
 
     let mut all_configs = settings.mcp_servers.clone();
-    
+
     // Add virtual BSL server only if not already present
     if !all_configs.iter().any(|c| c.id == "bsl-ls") {
         all_configs.push(crate::settings::McpServerConfig {
@@ -52,24 +58,39 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
             let server_name = config.name.clone();
             let server_id = config.id.clone();
             let start = std::time::Instant::now();
-            crate::app_log!("[MCP][TOOLS] Connecting to server: {} (ID: {})", server_name, server_id);
-            
+            crate::app_log!(
+                "[MCP][TOOLS] Connecting to server: {} (ID: {})",
+                server_name,
+                server_id
+            );
+
             match McpClient::new(config).await {
-                Ok(client) => {
-                    match client.list_tools().await {
-                        Ok(tools) => {
-                            let duration = start.elapsed().as_millis();
-                            crate::app_log!("[MCP][TOOLS] Server {} returned {} tools in {} ms.", server_name, tools.len(), duration);
-                            Ok((server_id, tools))
-                        },
-                        Err(e) => {
-                            crate::app_log!("[MCP][TOOLS][ERROR] Failed to list tools for {}: {}", server_name, e);
-                            Err(e)
-                        }
+                Ok(client) => match client.list_tools().await {
+                    Ok(tools) => {
+                        let duration = start.elapsed().as_millis();
+                        crate::app_log!(
+                            "[MCP][TOOLS] Server {} returned {} tools in {} ms.",
+                            server_name,
+                            tools.len(),
+                            duration
+                        );
+                        Ok((server_id, tools))
+                    }
+                    Err(e) => {
+                        crate::app_log!(
+                            "[MCP][TOOLS][ERROR] Failed to list tools for {}: {}",
+                            server_name,
+                            e
+                        );
+                        Err(e)
                     }
                 },
                 Err(e) => {
-                    crate::app_log!("[MCP][TOOLS][ERROR] Failed to connect to {}: {}", server_name, e);
+                    crate::app_log!(
+                        "[MCP][TOOLS][ERROR] Failed to connect to {}: {}",
+                        server_name,
+                        e
+                    );
                     Err(e)
                 }
             }
@@ -82,18 +103,26 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
         if let Ok((server_id, tools)) = res {
             for tool in tools {
                 // 1. Sanitize Name (only alphanumeric, underscore, hyphen)
-                let name = tool.name.chars()
+                let name = tool
+                    .name
+                    .chars()
                     .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                     .collect::<String>();
-                
-                if name.is_empty() { 
-                    crate::app_log!("[MCP][TOOLS][WARN] Tool name became empty after sanitization: {}", tool.name);
-                    continue; 
+
+                if name.is_empty() {
+                    crate::app_log!(
+                        "[MCP][TOOLS][WARN] Tool name became empty after sanitization: {}",
+                        tool.name
+                    );
+                    continue;
                 }
 
                 // 2. Ensure unique name
                 if seen_names.contains(&name) {
-                    crate::app_log!("[MCP][TOOLS][WARN] Duplicate tool name '{}'. Skipping.", name);
+                    crate::app_log!(
+                        "[MCP][TOOLS][WARN] Duplicate tool name '{}'. Skipping.",
+                        name
+                    );
                     continue;
                 }
                 seen_names.insert(name.clone());
@@ -111,7 +140,7 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
                         obj.insert("type".to_string(), serde_json::json!("object"));
                     }
                     if !obj.contains_key("properties") {
-                            obj.insert("properties".to_string(), serde_json::json!({}));
+                        obj.insert("properties".to_string(), serde_json::json!({}));
                     }
                 }
 
@@ -130,10 +159,14 @@ pub async fn get_available_tools() -> Vec<ToolInfo> {
             }
         }
     }
-    
+
     let total_duration = start_time.elapsed().as_millis();
-    crate::app_log!("[MCP][TOOLS] Total collection time: {} ms. Total tools: {}", total_duration, all_tools.len());
-    
+    crate::app_log!(
+        "[MCP][TOOLS] Total collection time: {} ms. Total tools: {}",
+        total_duration,
+        all_tools.len()
+    );
+
     // Update cache
     if let Ok(mut cache) = TOOLS_CACHE.lock() {
         *cache = Some((std::time::Instant::now(), all_tools.clone()));

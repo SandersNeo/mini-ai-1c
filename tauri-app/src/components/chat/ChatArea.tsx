@@ -1,11 +1,13 @@
-import { useRef, useEffect, useState, useMemo } from 'react';
+import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import type { BslDiagnostic } from '../../api/bsl';
 import { useChat, ToolCall, ChatMessage } from '../../contexts/ChatContext';
 import { useProfiles } from '../../contexts/ProfileContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useConfigurator } from '../../contexts/ConfiguratorContext';
 import { parseConfiguratorTitle, ConfiguratorTitleContext } from '../../utils/configurator';
 import { MarkdownRenderer, cleanDiffArtifacts } from '../MarkdownRenderer';
-import { Loader2, Square, ArrowUp, Settings, ChevronDown, ChevronRight, Monitor, RefreshCw, FileText, MousePointerClick, Brain, BrainCircuit, Check, X, Terminal, Pencil, Play, Send, User, HardHat, Mic, MoreHorizontal, Info } from 'lucide-react';
+import { Loader2, Square, ArrowUp, Settings, ChevronDown, ChevronRight, Monitor, RefreshCw, FileText, MousePointerClick, Brain, BrainCircuit, Check, X, Terminal, Pencil, Play, Send, User, HardHat, Mic, MoreHorizontal, Info, Wrench } from 'lucide-react';
 import { useVoiceInput } from '../../voice/useVoiceInput';
 import logo from '../../assets/logo.png';
 import ToolCallBlock from './ToolCallBlock';
@@ -15,9 +17,11 @@ import { FileDiff, Plus, Minus, Edit2, PanelRight } from 'lucide-react';
 import { CommandMenu } from './CommandMenu';
 import { ContextChips } from './ContextChips';
 import { DEFAULT_SLASH_COMMANDS, SlashCommand, CliStatus } from '../../types/settings';
+import type { OverlayQuickActionSessionPayload } from '../../types/quickActionSessions';
 import { cliProvidersApi } from '../../api/cli_providers';
 import { QwenAuthModal } from '../settings/QwenAuthModal';
 import { QueuedMessages } from './QueuedMessages';
+import McpToolsPopover from './McpToolsPopover';
 
 interface ChatAreaProps {
     originalCode?: string;
@@ -29,6 +33,24 @@ interface ChatAreaProps {
     onOpenSettings?: (tab?: string) => void;
     onActiveDiffChange?: (content: string) => void;
     activeDiffContent?: string;
+}
+
+interface OverlayExplainPayload {
+    confHwnd: number;
+    scope: 'selection' | 'current_method' | 'module';
+    code: string;
+    originalCode?: string | null;
+    runtimeId?: string | null;
+}
+
+function formatDiagnosticsLines(diagnostics?: Array<BslDiagnostic | string> | null): string[] {
+    return (diagnostics || []).map((diagnostic) => {
+        if (typeof diagnostic === 'string') {
+            return diagnostic;
+        }
+
+        return `- Line ${diagnostic.line + 1}: ${diagnostic.message} (${diagnostic.severity})`;
+    });
 }
 
 function buildCopyContent(msg: ChatMessage): string {
@@ -128,7 +150,17 @@ export function ChatArea({
     const { profiles, activeProfileId, activeProfile, setActiveProfile } = useProfiles();
     const isNaparnikActive = activeProfile?.provider === 'OneCNaparnik';
     const { settings, updateSettings } = useSettings();
-    const { detectedWindows, selectedHwnd, refreshWindows, selectWindow, activeConfigTitle, getCode, parsedTitleContext } = useConfigurator();
+    const {
+        detectedWindows,
+        selectedHwnd,
+        bindingStatus,
+        bindingMessage,
+        refreshWindows,
+        selectWindow,
+        activeConfigTitle,
+        getCode,
+        parsedTitleContext,
+    } = useConfigurator();
 
     const [appliedDiffMessages, setAppliedDiffMessages] = useState<Set<string>>(new Set());
     const [dismissedDiffMessages, setDismissedDiffMessages] = useState<Set<string>>(new Set());
@@ -150,18 +182,21 @@ export function ChatArea({
     // Slash Commands state
     const [showCommands, setShowCommands] = useState(false);
     const [commandFilter, setCommandFilter] = useState('');
-    const availableCommands = useMemo(() => {
+    const resolvedSlashCommands = useMemo(() => {
         const saved = settings?.slash_commands || DEFAULT_SLASH_COMMANDS;
         // Системные команды всегда используют актуальный шаблон из дефолтов
-        const synced = saved.map(cmd => {
+        return saved.map(cmd => {
             if (cmd.is_system) {
                 const def = DEFAULT_SLASH_COMMANDS.find(d => d.id === cmd.id);
                 if (def) return { ...cmd, template: def.template };
             }
             return cmd;
         });
-        return synced.filter(c => c.is_enabled);
     }, [settings?.slash_commands]);
+
+    const availableCommands = useMemo(() => {
+        return resolvedSlashCommands.filter(c => c.is_enabled);
+    }, [resolvedSlashCommands]);
 
     const filteredCommands = useMemo(() => {
         if (!commandFilter) return availableCommands;
@@ -171,6 +206,100 @@ export function ChatArea({
             c.name.toLowerCase().includes(filter)
         );
     }, [availableCommands, commandFilter]);
+
+    const resolveSlashCommand = useCallback((commandName: string): SlashCommand | undefined => {
+        const normalized = commandName.toLowerCase();
+        return (
+            availableCommands.find(c => c.command.toLowerCase() === normalized) ||
+            resolvedSlashCommands.find(c => c.command.toLowerCase() === normalized) ||
+            DEFAULT_SLASH_COMMANDS.find(c => c.command.toLowerCase() === normalized)
+        );
+    }, [availableCommands, resolvedSlashCommands]);
+
+    const expandSlashCommand = useCallback(async (
+        rawInput: string,
+        options?: {
+            codeOverride?: string;
+            queryOverride?: string;
+            diagnosticsOverride?: Array<BslDiagnostic | string> | null;
+        },
+    ): Promise<{
+        content: string;
+        displayContent?: string;
+        isSlashCommand: boolean;
+    }> => {
+        let textToSend = rawInput;
+        let displayContent: string | undefined;
+        let isSlashCommand = false;
+
+        if (!textToSend.startsWith('/')) {
+            return { content: textToSend, displayContent, isSlashCommand };
+        }
+
+        const firstSpace = textToSend.indexOf(' ');
+        const cmdPart = firstSpace === -1 ? textToSend.substring(1) : textToSend.substring(1, firstSpace);
+        const queryPart = options?.queryOverride ?? (firstSpace === -1 ? '' : textToSend.substring(firstSpace + 1).trim());
+        const foundCmd = resolveSlashCommand(cmdPart);
+
+        if (!foundCmd) {
+            return { content: textToSend, displayContent, isSlashCommand };
+        }
+
+        isSlashCommand = true;
+        displayContent = firstSpace === -1 ? `/${foundCmd.command}` : textToSend;
+
+        if (foundCmd.id === 'its' && !isNaparnikActive) {
+            const naparnik = settings?.mcp_servers.find(s => s.id === 'builtin-1c-naparnik');
+            if (!naparnik || !naparnik.enabled) {
+                throw new Error('Для использования команды /итс необходимо включить MCP сервер "Напарник" в настройках, либо выбрать профиль "1С:Напарник".');
+            }
+        }
+
+        if (['search-1c', 'refs-1c', 'struct-1c'].includes(foundCmd.id)) {
+            const searchServer = settings?.mcp_servers.find(s => s.id === 'builtin-1c-search');
+            if (!searchServer || !searchServer.enabled) {
+                throw new Error('Для использования этой команды необходимо включить MCP сервер "1С:Поиск по конфигурации" в настройках и указать путь к выгрузке конфигурации.');
+            }
+        }
+
+        let expanded = foundCmd.template;
+        let activeCode = options?.codeOverride ?? contextCode ?? modifiedCode ?? '';
+        if (expanded.includes('{code}') && !options?.codeOverride && !contextCode && selectedHwnd) {
+            try {
+                const fetchedCode = await getCode(true);
+                if (fetchedCode && fetchedCode.trim().length > 0) {
+                    activeCode = fetchedCode;
+                } else {
+                    const fullCode = await getCode(false);
+                    if (fullCode && fullCode.trim().length > 0) {
+                        activeCode = fullCode;
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to auto-fetch code context for slash command:', err);
+            }
+        }
+
+        const diagStringsText = formatDiagnosticsLines(options?.diagnosticsOverride ?? diagnostics).join('\n');
+        expanded = expanded.replace('{diagnostics}', diagStringsText || 'Ошибок не обнаружено');
+        expanded = expanded.replace('{code}', activeCode);
+        expanded = expanded.replace('{query}', queryPart);
+
+        return {
+            content: expanded,
+            displayContent,
+            isSlashCommand,
+        };
+    }, [
+        contextCode,
+        diagnostics,
+        getCode,
+        isNaparnikActive,
+        modifiedCode,
+        resolveSlashCommand,
+        selectedHwnd,
+        settings?.mcp_servers,
+    ]);
 
     const { isRecording, toggleRecording, isSupported, error: voiceError, permissionState } = useVoiceInput((text) => {
         setInput(prev => prev + (prev ? ' ' : '') + text);
@@ -224,6 +353,100 @@ export function ChatArea({
         fetchCliStatuses();
     }, [activeProfileId]);
 
+    useEffect(() => {
+        const unlisten = listen<OverlayExplainPayload>('open-explain-from-overlay', async (event) => {
+            const explainCode = (event.payload.code || event.payload.originalCode || '').trim();
+            if (!explainCode) {
+                return;
+            }
+
+            try {
+                setContextCode(explainCode);
+                setIsContextSelection(event.payload.scope === 'selection');
+                setConfiguratorTitleCtx(parsedTitleContext);
+                onActiveDiffChange?.('');
+
+                const prepared = await expandSlashCommand('/объясни', {
+                    codeOverride: explainCode,
+                });
+
+                await sendMessage(
+                    prepared.content,
+                    prepared.isSlashCommand ? undefined : explainCode,
+                    [],
+                    prepared.displayContent,
+                    parsedTitleContext,
+                );
+            } catch (err) {
+                console.error('[ChatArea] overlay explain handoff failed:', err);
+                addSystemMessage(`Не удалось отправить команду /объясни: ${String(err)}`, 'warning');
+            }
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [addSystemMessage, expandSlashCommand, onActiveDiffChange, parsedTitleContext, sendMessage]);
+
+    useEffect(() => {
+        const unlisten = listen<OverlayQuickActionSessionPayload>('open-quick-action-session-from-overlay', async (event) => {
+            const sessionCode = (event.payload.code || event.payload.originalCode || '').trim();
+            if (!sessionCode) {
+                return;
+            }
+
+            const commandText = (() => {
+                switch (event.payload.action) {
+                    case 'review':
+                        return '/ревью';
+                    case 'fix':
+                        return '/исправить';
+                    case 'elaborate':
+                        return `/доработай ${event.payload.task?.trim() ?? ''}`.trim();
+                    default:
+                        return '';
+                }
+            })();
+
+            if (!commandText) {
+                return;
+            }
+
+            try {
+                setContextCode(sessionCode);
+                setIsContextSelection(event.payload.scope === 'selection');
+                setConfiguratorTitleCtx(parsedTitleContext);
+                onActiveDiffChange?.('');
+
+                const diagnosticsOverride = event.payload.diagnostics?.length
+                    ? event.payload.diagnostics
+                    : event.payload.diagnosticsError
+                        ? [event.payload.diagnosticsError]
+                        : [];
+
+                const prepared = await expandSlashCommand(commandText, {
+                    codeOverride: sessionCode,
+                    diagnosticsOverride,
+                });
+
+                await sendMessage(
+                    prepared.content,
+                    prepared.isSlashCommand ? undefined : sessionCode,
+                    [],
+                    prepared.displayContent,
+                    parsedTitleContext,
+                );
+            } catch (err) {
+                console.error('[ChatArea] quick action handoff failed:', err);
+                addSystemMessage(`Не удалось отправить quick action в чат: ${String(err)}`, 'warning');
+            }
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [addSystemMessage, expandSlashCommand, onActiveDiffChange, parsedTitleContext, sendMessage]);
+
     // Update status when generation completed
     const prevIsLoadingRef = useRef(false);
     useEffect(() => {
@@ -257,6 +480,7 @@ export function ChatArea({
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    const [showToolsPopover, setShowToolsPopover] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -410,68 +634,19 @@ export function ChatArea({
     }, [messages, isLoading, onActiveDiffChange, appliedDiffMessages, diffActions, activeDiffContent]);
 
     const handleSendMessage = async (textOverride?: string) => {
-        let textToSend = textOverride || input;
-
-        // Автоматическое расширение слеш-команд
+        const rawInput = textOverride || input;
+        let textToSend = rawInput;
         let displayContent: string | undefined = undefined;
         let isSlashCommand = false;
 
-        if (!textOverride && textToSend.startsWith('/')) {
-            const firstSpace = textToSend.indexOf(' ');
-            const cmdPart = firstSpace === -1 ? textToSend.substring(1) : textToSend.substring(1, firstSpace);
-            const queryPart = firstSpace === -1 ? '' : textToSend.substring(firstSpace + 1).trim();
-
-            const foundCmd = availableCommands.find(c => c.command.toLowerCase() === cmdPart.toLowerCase());
-            if (foundCmd) {
-                isSlashCommand = true;
-                displayContent = textToSend; // Сохраняем "/итс вопрос" для отображения
-
-                // Проверка для /итс (пропускаем если активен прямой провайдер Напарника)
-                if (foundCmd.id === 'its' && !isNaparnikActive) {
-                    const naparnik = settings?.mcp_servers.find(s => s.id === 'builtin-1c-naparnik');
-                    if (!naparnik || !naparnik.enabled) {
-                        alert('Для использования команды /итс необходимо включить MCP сервер "Напарник" в настройках, либо выбрать профиль "1С:Напарник".');
-                        return;
-                    }
-                }
-
-                // Проверка для команд поиска по конфигурации
-                if (['search-1c', 'refs-1c', 'struct-1c'].includes(foundCmd.id)) {
-                    const searchServer = settings?.mcp_servers.find(s => s.id === 'builtin-1c-search');
-                    if (!searchServer || !searchServer.enabled) {
-                        alert('Для использования этой команды необходимо включить MCP сервер "1С:Поиск по конфигурации" в настройках и указать путь к выгрузке конфигурации.');
-                        return;
-                    }
-                }
-
-                let expanded = foundCmd.template;
-
-                // Если шаблон требует {code}, а у нас нет contextCode, 
-                // пытаемся автоматически получить выделенный текст из активного окна Конфигуратора
-                let activeCode = contextCode || modifiedCode || '';
-                if (expanded.includes('{code}') && !contextCode && selectedHwnd) {
-                    try {
-                        const fetchedCode = await getCode(true); // Запрашиваем только выделение
-                        if (fetchedCode && fetchedCode.trim().length > 0) {
-                            activeCode = fetchedCode;
-                        } else {
-                            // Если нет выделения, запрашиваем весь текст
-                            const fullCode = await getCode(false);
-                            if (fullCode && fullCode.trim().length > 0) {
-                                activeCode = fullCode;
-                            }
-                        }
-                    } catch (err) {
-                        console.error('Failed to auto-fetch code context for slash command:', err);
-                    }
-                }
-
-                const diagStringsText = (diagnostics || []).map((d: any) => `- Line ${d.line + 1}: ${d.message} (${d.severity})`).join('\n');
-                expanded = expanded.replace('{diagnostics}', diagStringsText || 'Ошибок не обнаружено');
-                expanded = expanded.replace('{code}', activeCode);
-                expanded = expanded.replace('{query}', queryPart);
-                textToSend = expanded;
-            }
+        try {
+            const prepared = await expandSlashCommand(rawInput);
+            textToSend = prepared.content;
+            displayContent = prepared.displayContent;
+            isSlashCommand = prepared.isSlashCommand;
+        } catch (err) {
+            alert(String(err));
+            return;
         }
 
         if (!textToSend.trim()) return;
@@ -1048,7 +1223,15 @@ export function ChatArea({
                     {messages.length === 0 ? (
                         <div className="flex items-center gap-2 text-[11px] text-zinc-600 italic transition-all duration-500">
                             <ChevronDown className="w-3.5 h-3.5 animate-bounce" />
-                            <span>{selectedHwnd ? 'Окно выбрано' : 'Выберите окно Конфигуратора снизу'}</span>
+                            <span>
+                                {bindingStatus === 'resolved' || bindingStatus === 'rebound'
+                                    ? 'Окно выбрано'
+                                    : bindingStatus === 'missing'
+                                        ? 'Ждём возвращения выбранного Конфигуратора'
+                                        : bindingStatus === 'ambiguous'
+                                            ? 'Нужно заново выбрать окно Конфигуратора'
+                                            : 'Выберите окно Конфигуратора снизу'}
+                            </span>
                         </div>
                     ) : (
                         <div className="flex items-center gap-3">
@@ -1304,9 +1487,14 @@ export function ChatArea({
                                         <div className="px-3 py-2 border-b border-[#27272a] bg-[#09090b]">
                                             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5"><Monitor className="w-3 h-3" /> Окна конфигуратора</span>
                                         </div>
+                                        {bindingMessage && (
+                                            <div className={`px-3 py-2 text-[11px] border-b border-[#27272a] ${bindingStatus === 'missing' || bindingStatus === 'ambiguous' ? 'text-amber-300 bg-amber-500/10' : 'text-zinc-400 bg-[#18181b]'}`}>
+                                                {bindingMessage}
+                                            </div>
+                                        )}
                                         <div className="max-h-[200px] overflow-y-auto custom-scrollbar p-1">
                                             {detectedWindows.length > 0 ? detectedWindows.map(w => (
-                                                <button key={w.hwnd} onClick={() => { selectWindow(w.hwnd); }}
+                                                <button key={w.hwnd} onClick={() => { selectWindow(w); }}
                                                     className={`w-full text-left px-3 py-2 rounded-md text-[13px] truncate transition-colors ${selectedHwnd === w.hwnd ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'text-zinc-400 hover:bg-[#27272a] hover:text-zinc-200'}`}
                                                     title={w.title}
                                                 >
@@ -1371,6 +1559,45 @@ export function ChatArea({
                                     </button>
                                 </div>
                             )}
+
+                            {/* MCP Tools popover button — always visible */}
+                            <div className="relative">
+                                <button
+                                    onClick={() => {
+                                        setShowToolsPopover(prev => !prev);
+                                        setShowModelDropdown(false);
+                                    }}
+                                    className="w-8 h-8 flex items-center justify-center rounded-lg bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-all"
+                                    title="MCP Tools"
+                                >
+                                    <Wrench className="w-4 h-4" />
+                                </button>
+                                {showToolsPopover && (
+                                    <McpToolsPopover
+                                        onToolSelect={(toolName: string) => {
+                                            const textarea = inputRef.current;
+                                            if (!textarea) {
+                                                setInput(prev => (prev ? prev + ` @${toolName} ` : `@${toolName} `));
+                                            } else {
+                                                const start = textarea.selectionStart ?? textarea.value.length;
+                                                const end = textarea.selectionEnd ?? textarea.value.length;
+                                                const before = input.slice(0, start);
+                                                const after = input.slice(end);
+                                                const insertion = `@${toolName} `;
+                                                const next = before + insertion + after;
+                                                setInput(next);
+                                                setTimeout(() => {
+                                                    textarea.focus();
+                                                    const pos = start + insertion.length;
+                                                    textarea.setSelectionRange(pos, pos);
+                                                }, 0);
+                                            }
+                                            setShowToolsPopover(false);
+                                        }}
+                                        onClose={() => setShowToolsPopover(false)}
+                                    />
+                                )}
+                            </div>
 
                             <button onClick={isLoading ? stopChat : () => handleSendMessage()} disabled={!isLoading && !input.trim()} className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors flex-shrink-0 ${isLoading ? 'bg-red-500/10 text-red-400' : input.trim() ? 'bg-blue-600 text-white' : 'bg-[#27272a] text-zinc-600'}`}>
                                 {isLoading ? <Square className="w-4 h-4 fill-current" /> : <ArrowUp className="w-4 h-4" strokeWidth={2.5} />}

@@ -1,5 +1,5 @@
-use crate::llm_profiles::{self, LLMProfile, ProfileStore};
 use crate::llm::cli_providers::qwen::QwenCliProvider;
+use crate::llm_profiles::{self, LLMProfile, ProfileStore};
 
 /// Get all LLM profiles
 #[tauri::command]
@@ -10,11 +10,35 @@ pub fn get_profiles() -> ProfileStore {
 /// Save profile
 #[tauri::command]
 pub fn save_profile(mut profile: LLMProfile, api_key: Option<String>) -> Result<(), String> {
-    if let Some(key) = api_key {
-        profile.set_api_key(&key);
-    }
-
     let mut store = llm_profiles::load_profiles();
+    let existing_encrypted = store
+        .profiles
+        .iter()
+        .find(|p| p.id == profile.id)
+        .map(|p| p.api_key_encrypted.clone());
+
+    match api_key {
+        Some(key) if !key.trim().is_empty() => {
+            profile.set_api_key(&key);
+        }
+        _ => {
+            let incoming = profile.api_key_encrypted.trim();
+            let incoming_is_placeholder =
+                incoming.is_empty() || incoming.eq_ignore_ascii_case("set");
+
+            if incoming_is_placeholder {
+                if let Some(existing) = existing_encrypted {
+                    if existing.trim().is_empty() || existing.eq_ignore_ascii_case("set") {
+                        profile.api_key_encrypted.clear();
+                    } else {
+                        profile.api_key_encrypted = existing;
+                    }
+                } else {
+                    profile.api_key_encrypted.clear();
+                }
+            }
+        }
+    }
 
     // Update or add profile
     if let Some(pos) = store.profiles.iter().position(|p| p.id == profile.id) {
@@ -79,9 +103,12 @@ pub fn set_active_profile(profile_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn fetch_models_cmd(profile_id: String) -> Result<Vec<String>, String> {
     let store = llm_profiles::load_profiles();
-    let profile = store.profiles.iter().find(|p| p.id == profile_id)
+    let profile = store
+        .profiles
+        .iter()
+        .find(|p| p.id == profile_id)
         .ok_or("Profile not found")?;
-    
+
     crate::ai::fetch_models(profile).await
 }
 
@@ -89,65 +116,81 @@ pub async fn fetch_models_cmd(profile_id: String) -> Result<Vec<String>, String>
 #[tauri::command]
 pub async fn test_llm_connection_cmd(profile_id: String) -> Result<String, String> {
     let store = llm_profiles::load_profiles();
-    let profile = store.profiles.iter().find(|p| p.id == profile_id)
+    let profile = store
+        .profiles
+        .iter()
+        .find(|p| p.id == profile_id)
         .ok_or("Profile not found")?;
-    
+
     crate::ai::test_connection(profile).await
 }
 
 /// Fetch models from a specific provider using API and Registry
 #[tauri::command]
-pub async fn fetch_models_from_provider(provider_id: String, base_url: String, api_key: String) -> Result<Vec<crate::llm::providers::Model>, String> {
+pub async fn fetch_models_from_provider(
+    provider_id: String,
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<crate::llm::providers::Model>, String> {
     use crate::llm::providers;
-    
+
     // 1. Fetch from API
     let api_models = providers::fetch_models_from_api(&provider_id, &base_url, &api_key).await?;
 
     if api_models.is_empty() {
-         return Err("Provider returned empty model list".to_string());
+        return Err("Provider returned empty model list".to_string());
     }
 
     // 2. Fetch Registry
-    let registry = providers::fetch_registry().await
-        .unwrap_or_else(|e| {
-             crate::app_log!(force: true, "Failed to fetch registry: {}", e);
-             providers::RegistryData { providers: std::collections::HashMap::new() }
-        });
+    let registry = providers::fetch_registry().await.unwrap_or_else(|e| {
+        crate::app_log!(force: true, "Failed to fetch registry: {}", e);
+        providers::RegistryData {
+            providers: std::collections::HashMap::new(),
+        }
+    });
 
     // 3. Merge
     let merged = providers::merge_models(api_models, &registry, &provider_id);
-    
+
     Ok(merged)
 }
 
 /// Fetch models for an existing profile (using stored key)
 #[tauri::command]
-pub async fn fetch_models_for_profile(profile_id: String) -> Result<Vec<crate::llm::providers::Model>, String> {
+pub async fn fetch_models_for_profile(
+    profile_id: String,
+) -> Result<Vec<crate::llm::providers::Model>, String> {
     use crate::llm::providers;
-    
+
     let store = llm_profiles::load_profiles();
-    let profile = store.profiles.iter().find(|p| p.id == profile_id)
+    let profile = store
+        .profiles
+        .iter()
+        .find(|p| p.id == profile_id)
         .ok_or("Profile not found")?;
 
-    let api_key = profile.get_api_key();
+    let api_key = profile.try_get_api_key()?;
     let base_url = profile.get_base_url();
-    
+
     // 1. Fetch from API
-    let api_models = providers::fetch_models_from_api(&profile.provider.to_string(), &base_url, &api_key).await?;
+    let api_models =
+        providers::fetch_models_from_api(&profile.provider.to_string(), &base_url, &api_key)
+            .await?;
 
     if api_models.is_empty() {
-         return Err("Provider returned empty model list".to_string());
+        return Err("Provider returned empty model list".to_string());
     }
 
     // 2. Fetch Registry
-    let registry = providers::fetch_registry().await
-        .unwrap_or_else(|e| {
-             crate::app_log!(force: true, "Failed to fetch registry: {}", e);
-             providers::RegistryData { providers: std::collections::HashMap::new() }
-        });
+    let registry = providers::fetch_registry().await.unwrap_or_else(|e| {
+        crate::app_log!(force: true, "Failed to fetch registry: {}", e);
+        providers::RegistryData {
+            providers: std::collections::HashMap::new(),
+        }
+    });
 
     // 3. Merge
     let merged = providers::merge_models(api_models, &registry, &profile.provider.to_string());
-    
+
     Ok(merged)
 }

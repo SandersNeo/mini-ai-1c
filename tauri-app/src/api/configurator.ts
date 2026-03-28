@@ -1,8 +1,33 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { QuickActionAction } from '../types/quickActionSessions';
 
 export interface WindowInfo {
     hwnd: number;
     title: string;
+    process_id: number;
+}
+
+export type ConfiguratorWriteIntent =
+    | 'replace_selection'
+    | 'replace_current_method'
+    | 'insert_before_current_method'
+    | 'replace_module';
+
+export interface ConfiguratorApplySupport {
+    canApplyDirectly: boolean;
+    preferredWriter: string;
+    targetKind?: string | null;
+    reason?: string | null;
+}
+
+export interface ConfiguratorPasteOptions {
+    action?: QuickActionAction;
+    writeIntent?: ConfiguratorWriteIntent;
+    caretLine?: number | null;
+    methodStartLine?: number | null;
+    methodName?: string | null;
+    runtimeId?: string | null;
+    forceLegacyApply?: boolean;
 }
 
 /**
@@ -39,12 +64,36 @@ export async function pasteCodeToConfigurator(
     hwnd: number,
     code: string,
     useSelectAll: boolean = false,
-    originalContent?: string
+    originalContent?: string,
+    options?: ConfiguratorPasteOptions,
 ): Promise<void> {
     return await invoke('paste_code_to_configurator', {
         hwnd,
         code,
         useSelectAll,
+        originalContent: originalContent ?? null,
+        action: options?.action ?? null,
+        writeIntent: options?.writeIntent ?? null,
+        caretLine: options?.caretLine ?? null,
+        methodStartLine: options?.methodStartLine ?? null,
+        methodName: options?.methodName ?? null,
+        runtimeId: options?.runtimeId ?? null,
+        forceLegacyApply: options?.forceLegacyApply ?? null,
+    });
+}
+
+export async function getConfiguratorApplySupport(
+    hwnd: number,
+    useSelectAll: boolean = false,
+    action?: 'describe' | 'elaborate' | 'fix' | 'explain' | 'review',
+    writeIntent?: ConfiguratorWriteIntent,
+    originalContent?: string,
+): Promise<ConfiguratorApplySupport> {
+    return await invoke<ConfiguratorApplySupport>('get_configurator_apply_support_cmd', {
+        hwnd,
+        useSelectAll,
+        action: action ?? null,
+        writeIntent: writeIntent ?? null,
         originalContent: originalContent ?? null,
     });
 }
@@ -76,4 +125,12 @@ export async function alignWithConfigurator(hwnd: number): Promise<void> {
  */
 export async function setConfiguratorRdpMode(enabled: boolean): Promise<void> {
     return await invoke('set_configurator_rdp_mode', { enabled });
+}
+
+export async function setConfiguratorEditorBridgeEnabled(enabled: boolean): Promise<void> {
+    return await invoke('set_configurator_editor_bridge_enabled', { enabled });
+}
+
+export async function restartEditorBridge(): Promise<void> {
+    return await invoke('restart_editor_bridge_cmd');
 }

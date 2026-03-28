@@ -1,9 +1,9 @@
+pub mod client;
 pub mod models;
+pub mod naparnik_client;
 pub mod prompts;
 pub mod tools;
-pub mod client;
-pub mod naparnik_client;
 
+pub use client::*;
 pub use models::*;
 pub use tools::*;
-pub use client::*;

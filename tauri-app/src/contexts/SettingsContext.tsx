@@ -1,7 +1,10 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import * as api from '../api';
 import { loader } from '@monaco-editor/react';
-import { setConfiguratorRdpMode } from '../api/configurator';
+import {
+    setConfiguratorEditorBridgeEnabled,
+    setConfiguratorRdpMode
+} from '../api/configurator';
 
 import { AppSettings } from '../types/settings';
 
@@ -20,10 +23,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         try {
             const data = await api.getSettings();
             setSettings(data);
-            // Sync RDP mode with Rust backend on startup
-            if (data.configurator?.rdp_mode) {
-                setConfiguratorRdpMode(true).catch(() => {});
-            }
+            setConfiguratorRdpMode(data.configurator?.rdp_mode ?? false).catch(() => {});
+            setConfiguratorEditorBridgeEnabled(data.configurator?.editor_bridge_enabled ?? false).catch(() => {});
         } catch (e) {
             console.error("Failed to load settings:", e);
         }
@@ -32,6 +33,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     const updateSettings = React.useCallback(async (newSettings: AppSettings) => {
         try {
             await api.saveSettings(newSettings);
+            setConfiguratorRdpMode(newSettings.configurator?.rdp_mode ?? false).catch(() => {});
+            setConfiguratorEditorBridgeEnabled(newSettings.configurator?.editor_bridge_enabled ?? false).catch(() => {});
             setSettings(newSettings);
         } catch (e) {
             console.error("Failed to save settings:", e);

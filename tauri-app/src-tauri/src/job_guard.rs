@@ -12,9 +12,9 @@ mod inner {
         Foundation::{CloseHandle, HANDLE},
         System::{
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW,
-                JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, SetInformationJobObject,
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
         },
@@ -45,12 +45,18 @@ mod inner {
                 &info as *const _ as *const std::ffi::c_void,
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ) {
-                stderr_log(&format!("[job_guard] SetInformationJobObject failed: {:?}", e));
+                stderr_log(&format!(
+                    "[job_guard] SetInformationJobObject failed: {:?}",
+                    e
+                ));
                 let _ = CloseHandle(job);
                 return 0;
             }
             let addr = job.0 as usize;
-            stderr_log(&format!("[job_guard] Kill-on-close Job Object created (handle=0x{:x})", addr));
+            stderr_log(&format!(
+                "[job_guard] Kill-on-close Job Object created (handle=0x{:x})",
+                addr
+            ));
             addr
         })
     }
@@ -65,14 +71,23 @@ mod inner {
             match OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) {
                 Ok(proc) => {
                     if let Err(e) = AssignProcessToJobObject(job, proc) {
-                        stderr_log(&format!("[job_guard] AssignProcessToJobObject(pid={}) failed: {:?}", pid, e));
+                        stderr_log(&format!(
+                            "[job_guard] AssignProcessToJobObject(pid={}) failed: {:?}",
+                            pid, e
+                        ));
                     } else {
-                        stderr_log(&format!("[job_guard] pid={} assigned to kill-on-close job", pid));
+                        stderr_log(&format!(
+                            "[job_guard] pid={} assigned to kill-on-close job",
+                            pid
+                        ));
                     }
                     let _ = CloseHandle(proc);
                 }
                 Err(e) => {
-                    stderr_log(&format!("[job_guard] OpenProcess(pid={}) failed: {:?}", pid, e));
+                    stderr_log(&format!(
+                        "[job_guard] OpenProcess(pid={}) failed: {:?}",
+                        pid, e
+                    ));
                 }
             }
         }

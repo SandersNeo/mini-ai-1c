@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
-use std::sync::Mutex;
-use lazy_static::lazy_static;
 use chrono::Local;
+use lazy_static::lazy_static;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 const MAX_LOG_LINES: usize = 2000;
 
@@ -23,14 +23,14 @@ pub fn log(message: &str, force: bool) {
     if !force && !is_debug_mode() {
         return;
     }
-    
+
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let formatted_message = format!("[{}] {}", timestamp, message);
-    
+
     // Print to real console — ignore broken pipe errors (os error 232 on Windows)
     use std::io::Write;
     let _ = writeln!(std::io::stdout().lock(), "{}", formatted_message);
-    
+
     let mut logs = LOGS.lock().unwrap();
     if logs.len() >= MAX_LOG_LINES {
         logs.pop_front();

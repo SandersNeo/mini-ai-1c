@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
@@ -7,13 +7,30 @@ import { useSettings } from '../../contexts/SettingsContext';
 import { useBsl } from '../../contexts/BslContext';
 import { useChat } from '../../contexts/ChatContext';
 import { useConfigurator } from '../../contexts/ConfiguratorContext';
+import { getConfiguratorApplySupport } from '../../api/configurator';
 import { CodeSidePanel } from '../CodeSidePanel';
 import { SettingsPanel } from '../SettingsPanel';
 import { ConflictDialog } from '../ui/ConflictDialog';
 import { Header } from './Header';
 import { ChatArea } from '../chat/ChatArea';
 import { OnboardingWizard } from '../Onboarding/OnboardingWizard';
+import type { OverlayQuickActionSessionPayload } from '../../types/quickActionSessions';
 import logo from '../../assets/logo.png';
+
+interface OverlayDiffPayload {
+    diffContent: string;
+    originalCode?: string | null;
+    confHwnd: number;
+    useSelectAll: boolean;
+}
+
+interface OverlayExplainPayload {
+    confHwnd: number;
+    scope: 'selection' | 'current_method' | 'module';
+    code: string;
+    originalCode?: string | null;
+    runtimeId?: string | null;
+}
 
 export function MainLayout() {
     const { settings } = useSettings();
@@ -35,6 +52,8 @@ export function MainLayout() {
     const [showConflictDialog, setShowConflictDialog] = useState(false);
     const [selectionActive, setSelectionActive] = useState(true);
     const [activeDiffContent, setActiveDiffContent] = useState(''); // Стейт для диффов
+    const [activeQuickActionSession, setActiveQuickActionSession] = useState<OverlayQuickActionSessionPayload | null>(null);
+    const lastConfiguratorCodeRef = useRef(lastConfiguratorCode);
 
     // useMemo + try/catch защищает от ошибки "Cannot read properties of undefined (reading 'metadata')"
     // которая возникает если Tauri IPC не инициализирован (первый рендер / dev-режим браузера)
@@ -85,6 +104,94 @@ export function MainLayout() {
     }, []);
 
 
+    // Держим ref в актуальном состоянии для использования внутри listener-а без пересоздания
+    useEffect(() => {
+        lastConfiguratorCodeRef.current = lastConfiguratorCode;
+    }, [lastConfiguratorCode]);
+
+    // Listen for overlay -> main window diff handoff.
+    useEffect(() => {
+        const unlisten = listen<OverlayDiffPayload>('open-diff-from-overlay', (event) => {
+            const baseCode = event.payload.originalCode ?? lastConfiguratorCodeRef.current ?? '';
+            setActiveQuickActionSession(null);
+            setLastConfiguratorCode(baseCode);
+            setUiBaselineCode(baseCode);
+            setModifiedCode(baseCode);
+            setActiveDiffContent(event.payload.diffContent || '');
+            setViewMode(prev => prev === 'assistant' ? 'split' : prev);
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, []);
+
+
+    const ensureExpandedWindow = useCallback(async () => {
+        if (!appWindow) return;
+
+        const size = await appWindow.innerSize();
+        const factor = await appWindow.scaleFactor();
+        const logicalWidth = size.width / factor;
+        const logicalHeight = size.height / factor;
+
+        if (logicalWidth < 500) {
+            await appWindow.setSize(new LogicalSize(700, logicalHeight));
+        }
+    }, [appWindow]);
+
+    useEffect(() => {
+        const unlisten = listen<OverlayExplainPayload>('open-explain-from-overlay', (event) => {
+            const explainCode = (event.payload.code || event.payload.originalCode || '').trim();
+            if (!explainCode) {
+                return;
+            }
+
+            void ensureExpandedWindow().catch((e) => {
+                console.warn('[MainLayout] Failed to expand window for explain handoff:', e);
+            });
+
+            setActiveQuickActionSession(null);
+            setLastConfiguratorCode(explainCode);
+            setUiBaselineCode(explainCode);
+            setModifiedCode(explainCode);
+            setDiagnostics([]);
+            setActiveDiffContent('');
+            setViewMode('assistant');
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [ensureExpandedWindow]);
+
+    useEffect(() => {
+        const unlisten = listen<OverlayQuickActionSessionPayload>('open-quick-action-session-from-overlay', (event) => {
+            const sessionCode = (event.payload.code || event.payload.originalCode || '').trim();
+            if (!sessionCode) {
+                return;
+            }
+
+            const baseCode = event.payload.originalCode?.trim() || sessionCode;
+
+            void ensureExpandedWindow().catch((e) => {
+                console.warn('[MainLayout] Failed to expand window for quick action handoff:', e);
+            });
+
+            setActiveQuickActionSession(event.payload);
+            setLastConfiguratorCode(baseCode);
+            setUiBaselineCode(baseCode);
+            setModifiedCode(baseCode);
+            setDiagnostics(event.payload.diagnostics ?? []);
+            setActiveDiffContent('');
+            setViewMode('split');
+        });
+
+        return () => {
+            unlisten.then(fn => fn());
+        };
+    }, [ensureExpandedWindow]);
+
     // Analysis effect — runs only when modifiedCode changes AND we are not streaming
     useEffect(() => {
         if (!modifiedCode || isLoading) return;
@@ -104,15 +211,68 @@ export function MainLayout() {
         return () => clearTimeout(timer);
     }, [modifiedCode, analyzeCode, isLoading]);
 
+    const ensureQuickActionDirectApplyAvailable = useCallback(async (
+        writeSession: OverlayQuickActionSessionPayload | null,
+        useSelectAll: boolean,
+        originalContent?: string,
+    ) => {
+        if (
+            writeSession?.mode !== 'write'
+            || settings?.configurator?.editor_bridge_enabled !== true
+            || !writeSession.writeIntent
+        ) {
+            return;
+        }
+
+        const support = await getConfiguratorApplySupport(
+            writeSession.confHwnd,
+            useSelectAll,
+            writeSession.action,
+            writeSession.writeIntent,
+            originalContent,
+        );
+
+        if (support.canApplyDirectly) {
+            return;
+        }
+
+        throw new Error(
+            support.reason
+            || 'Семантическое применение изменений в 1С сейчас недоступно. Проверьте EditorBridge/Scintilla или отключите опцию быстрых действий в 1С Конфигураторе.',
+        );
+    }, [settings?.configurator?.editor_bridge_enabled]);
+
+    void ensureQuickActionDirectApplyAvailable;
+
     const handleApply = useCallback(async () => {
         setIsApplying(true);
         try {
-            // If original is empty (new module), force select all for clean write
-            const useSelectAll = !lastConfiguratorCode || lastConfiguratorCode.trim().length === 0;
-            await pasteCode(modifiedCode, useSelectAll, lastConfiguratorCode || undefined);
+            const writeSession = activeQuickActionSession?.mode === 'write' ? activeQuickActionSession : null;
+            const useSelectAll = writeSession
+                ? writeSession.useSelectAll
+                : (!lastConfiguratorCode || lastConfiguratorCode.trim().length === 0);
+            const originalContent = writeSession?.originalCode || lastConfiguratorCode || undefined;
+
+            await pasteCode(
+                modifiedCode,
+                useSelectAll,
+                originalContent,
+                writeSession
+                    ? {
+                        action: writeSession.action,
+                        writeIntent: writeSession.writeIntent,
+                        caretLine: writeSession.caretLine ?? null,
+                        methodStartLine: writeSession.methodStartLine ?? null,
+                        methodName: writeSession.methodName ?? null,
+                        runtimeId: writeSession.runtimeId ?? null,
+                        forceLegacyApply: true,
+                    }
+                    : { forceLegacyApply: true },
+            );
             // При успешном применении - 1С теперь содержит modifiedCode
             setLastConfiguratorCode(modifiedCode);
             setUiBaselineCode(modifiedCode);
+            setActiveQuickActionSession(null);
             // Сброс больше не нужен здесь, так как pasteCode вызовет событие RESET_DIFF
         } catch (e: any) {
             const errorMsg = typeof e === 'string' ? e : e?.message || String(e);
@@ -127,38 +287,74 @@ export function MainLayout() {
         } finally {
             setIsApplying(false);
         }
-    }, [modifiedCode, lastConfiguratorCode, pasteCode]);
+    }, [activeQuickActionSession, modifiedCode, lastConfiguratorCode, pasteCode]);
 
     const handleConflictApplyToAll = useCallback(async () => {
         setShowConflictDialog(false);
         setIsApplying(true);
         try {
             // useSelectAll = true, originalContent = undefined (bypass hash check)
-            await pasteCode(modifiedCode, true);
+            const writeSession = activeQuickActionSession?.mode === 'write' ? activeQuickActionSession : null;
+            await pasteCode(
+                modifiedCode,
+                true,
+                undefined,
+                writeSession
+                    ? {
+                        action: writeSession.action,
+                        writeIntent: writeSession.writeIntent,
+                        caretLine: writeSession.caretLine ?? null,
+                        methodStartLine: writeSession.methodStartLine ?? null,
+                        methodName: writeSession.methodName ?? null,
+                        runtimeId: writeSession.runtimeId ?? null,
+                        forceLegacyApply: true,
+                    }
+                    : { forceLegacyApply: true },
+            );
+            setActiveQuickActionSession(null);
         } catch (e: any) {
             alert("Ошибка применения: " + (e?.message || String(e)));
         } finally {
             setIsApplying(false);
         }
-    }, [modifiedCode, pasteCode]);
+    }, [activeQuickActionSession, modifiedCode, pasteCode]);
 
     const handleConflictApplyToSelection = useCallback(async () => {
         setShowConflictDialog(false);
         setIsApplying(true);
         try {
             // useSelectAll = false, originalContent = undefined (bypass hash check)
-            await pasteCode(modifiedCode, false);
+            const writeSession = activeQuickActionSession?.mode === 'write' ? activeQuickActionSession : null;
+            await pasteCode(
+                modifiedCode,
+                false,
+                undefined,
+                writeSession
+                    ? {
+                        action: writeSession.action,
+                        writeIntent: writeSession.writeIntent,
+                        caretLine: writeSession.caretLine ?? null,
+                        methodStartLine: writeSession.methodStartLine ?? null,
+                        methodName: writeSession.methodName ?? null,
+                        runtimeId: writeSession.runtimeId ?? null,
+                        forceLegacyApply: true,
+                    }
+                    : { forceLegacyApply: true },
+            );
+            setActiveQuickActionSession(null);
         } catch (e: any) {
             alert("Ошибка применения: " + (e?.message || String(e)));
         } finally {
             setIsApplying(false);
         }
-    }, [modifiedCode, pasteCode]);
+    }, [activeQuickActionSession, modifiedCode, pasteCode]);
 
     const handleCodeLoaded = useCallback((code: string, _isSelection: boolean) => {
+        setActiveQuickActionSession(null);
         setLastConfiguratorCode(code);
         setUiBaselineCode(code);
         setModifiedCode(code);
+        setDiagnostics([]);
         setActiveDiffContent('');
         setViewMode(prev => prev === 'assistant' ? 'split' : prev);
     }, []);
@@ -184,7 +380,7 @@ export function MainLayout() {
 
             {/* Custom Title Bar */}
             <div className="relative h-10 bg-[#09090b] flex items-center justify-between px-4 border-b border-[#27272a] select-none z-50">
-                <div data-tauri-drag-region className="absolute inset-0 z-0" onMouseDown={() => appWindow?.startDragging()} />
+                <div data-tauri-drag-region className="absolute inset-0 z-0" />
                 <div className="relative z-10 flex items-center gap-2 pointer-events-none">
                     <img src={logo} alt="Logo" className="w-5 h-5" />
                     <span className="text-sm font-medium text-zinc-300">Mini AI 1C</span>
@@ -208,6 +404,7 @@ export function MainLayout() {
                     onViewModeChange={setViewMode}
                     onClearChat={() => {
                         clearChat();
+                        setActiveQuickActionSession(null);
                         setLastConfiguratorCode('');
                         setUiBaselineCode('');
                         setModifiedCode('');
