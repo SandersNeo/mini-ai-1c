@@ -1,12 +1,11 @@
-
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { speechService } from './speechRecognition';
 
 export function useVoiceInput(onText: (text: string) => void, selectedHwnd: number | null) {
     const [isRecording, setIsRecording] = useState(false);
-    const [error, setError] = useState<string | null>(null);
     const [permissionState, setPermissionState] = useState<PermissionState | 'unknown'>('unknown');
-    const lastFinalTextRef = useRef('');
+    const [error, setError] = useState<string | null>(null);
+    const lastTranscriptRef = useRef('');
 
     const checkPermission = useCallback(async () => {
         try {
@@ -25,8 +24,10 @@ export function useVoiceInput(onText: (text: string) => void, selectedHwnd: numb
     }, [checkPermission]);
 
     const processResult = useCallback((text: string, isFinal: boolean) => {
+        lastTranscriptRef.current = text;
         if (isFinal) {
             onText(text);
+            lastTranscriptRef.current = '';
         }
     }, [onText]);
 
@@ -34,11 +35,16 @@ export function useVoiceInput(onText: (text: string) => void, selectedHwnd: numb
         if (isRecording) {
             speechService.stop();
             setIsRecording(false);
+
+            if (lastTranscriptRef.current) {
+                onText(lastTranscriptRef.current);
+                lastTranscriptRef.current = '';
+            }
         } else {
-            // Check permission before starting
             await checkPermission();
 
             setError(null);
+            lastTranscriptRef.current = '';
             speechService.start(
                 (result) => {
                     processResult(result.text, result.isFinal);
@@ -51,7 +57,7 @@ export function useVoiceInput(onText: (text: string) => void, selectedHwnd: numb
             );
             setIsRecording(true);
         }
-    }, [isRecording, processResult, checkPermission]);
+    }, [isRecording, processResult, checkPermission, onText]);
 
     return {
         isRecording,
