@@ -19,5 +19,4 @@
 
 <!-- release-archive:start -->
 - [Версия 1.1.22 — 23 марта 2026](2026-03-23-v1.1.22.md) — новые инструменты MCP в интерфейсе, просмотр инструментов и стабилизация MCP runtime.
-- [Специальная заметка: стабилизация EditorBridge — 24 марта 2026](2026-03-24-editor-bridge-stabilization.md) — watchdog, rebinding и стабилизация интеграции с Конфигуратором.
 <!-- release-archive:end -->
