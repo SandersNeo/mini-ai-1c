@@ -146,6 +146,10 @@ pub async fn download_editor_bridge(app: AppHandle) -> Result<String, String> {
         ));
     }
 
+    // Kill running EditorBridge.exe before overwriting — file is locked while process is alive.
+    crate::editor_bridge::stop();
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
     let mut file = tokio::fs::File::create(&target_path)
         .await
         .map_err(|e| format!("Failed to create file: {}", e))?;
