@@ -555,17 +555,24 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                 <div className="space-y-4">
                     {sortedServers.map((server) => {
                         const status = statuses[server.id];
-                        const isConnected = status?.status === 'connected';
-                        const isUnknown = status?.status === 'unknown';
-                        const isOffline = status?.status === 'offline';
-                        const isError = status?.status === 'error';
-                        const isStopped = status?.status === 'stopped';
-                        const lastChecked = status?.last_checked || 0;
                         const isMetadata = server.id === BUILTIN_1C_METADATA_ID;
                         const isBslLs = server.id === BUILTIN_BSL_LS_ID;
                         const isHelp = server.id === BUILTIN_1C_HELP_ID;
                         const isSearch = server.id === BUILTIN_1C_SEARCH_ID;
                         const isBuiltin = server.id === BUILTIN_1C_SERVER_ID || isMetadata || isBslLs || isHelp || isSearch;
+                        const searchConfigPath = isSearch ? (server.env?.['ONEC_CONFIG_PATH']?.trim() || '') : '';
+                        const searchHelpStatus = isSearch ? (status?.help_status || '') : '';
+                        const isSearchUnavailable = isSearch && (!searchConfigPath || searchHelpStatus === 'unavailable');
+                        const effectiveStatus = isSearchUnavailable ? 'error' : status?.status;
+                        const isConnected = effectiveStatus === 'connected';
+                        const isUnknown = effectiveStatus === 'unknown';
+                        const isOffline = effectiveStatus === 'offline';
+                        const isError = effectiveStatus === 'error';
+                        const isStopped = effectiveStatus === 'stopped';
+                        const lastChecked = status?.last_checked || 0;
+                        const toolsDisabledReason = isSearchUnavailable
+                            ? (status?.index_message || 'Укажите корректный путь к выгрузке конфигурации 1С, затем повторите проверку.')
+                            : 'Показать инструменты MCP';
 
                         return (
                             <div
@@ -1251,7 +1258,8 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                                             </button>
                                             <button
                                                 onClick={() => setViewingToolsId(server.id)}
-                                                disabled={!server.enabled}
+                                                disabled={!server.enabled || isSearchUnavailable}
+                                                title={toolsDisabledReason}
                                                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 <Wrench className="w-3.5 h-3.5" />

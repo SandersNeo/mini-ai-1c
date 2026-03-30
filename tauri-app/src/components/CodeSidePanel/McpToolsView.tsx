@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { McpToolInfo } from '@/types/mcp';
 import type { McpServerConfig } from '@/types/settings';
-import { Wrench, RefreshCw, Info } from 'lucide-react';
+import { Wrench, RefreshCw, Info, AlertCircle } from 'lucide-react';
 
 interface McpToolsViewProps {
     serverName?: string | null;
@@ -103,6 +103,27 @@ export function McpToolsView({
                             {grouped[server].map(tool => {
                                 const toolId = getToolIdentity(tool);
                                 const isExpanded = expandedTool === toolId;
+                                const isUnavailableTool = tool.tool_name === '__server_unavailable__';
+
+                                if (isUnavailableTool) {
+                                    return (
+                                        <div
+                                            key={toolId}
+                                            className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm"
+                                        >
+                                            <div className="flex items-start gap-2">
+                                                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                                                <div>
+                                                    <div className="font-medium text-amber-300">Инструменты недоступны</div>
+                                                    <div className="mt-1 text-xs leading-relaxed text-zinc-400">
+                                                        {tool.description ?? 'Сервер не готов отдавать список инструментов.'}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+
                                 return (
                                     <div
                                         key={toolId}

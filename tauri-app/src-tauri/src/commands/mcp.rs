@@ -1,4 +1,7 @@
-use crate::mcp_client::{McpClient, McpServerStatus, McpTool};
+use crate::mcp_client::{
+    builtin_search_unavailable_reason, McpClient, McpServerStatus, McpTool,
+    BUILTIN_1C_SEARCH_SERVER_ID,
+};
 use crate::settings::{load_settings, McpServerConfig};
 use futures::future::join_all;
 use lazy_static::lazy_static;
@@ -38,11 +41,27 @@ fn unavailable_tool(server_name: String, message: String) -> Vec<McpToolInfo> {
 
 async fn collect_server_tools(config: McpServerConfig) -> Vec<McpToolInfo> {
     let server_name = config.name.clone();
+    let server_id = config.id.clone();
     let timeout = Duration::from_secs(MCP_TOOLS_REQUEST_TIMEOUT_SECS);
 
+    if let Some(message) = builtin_search_unavailable_reason(&config) {
+        return unavailable_tool(server_name, message);
+    }
+
     match tokio::time::timeout(timeout, async move {
-        let client = McpClient::new(config).await?;
-        client.list_tools().await
+        let client = McpClient::new(config.clone()).await?;
+        let tools = client.list_tools().await?;
+        if server_id == BUILTIN_1C_SEARCH_SERVER_ID {
+            let (help_status, help_message) = client.get_help_state().await;
+            if help_status == "unavailable" {
+                return Err(if help_message.is_empty() {
+                    "Путь к выгрузке конфигурации 1С не задан".to_string()
+                } else {
+                    help_message
+                });
+            }
+        }
+        Ok(tools)
     })
     .await
     {
@@ -245,9 +264,25 @@ pub async fn call_mcp_tool(
 /// Test connection to an MCP server
 #[tauri::command]
 pub async fn test_mcp_connection(config: McpServerConfig) -> Result<String, String> {
+    if let Some(message) = builtin_search_unavailable_reason(&config) {
+        return Err(format!("Ошибка: {}", message));
+    }
+
     let client = McpClient::new(config).await?;
     match client.list_tools().await {
-        Ok(tools) => Ok(format!("Подключено! ({})", tools.len())),
+        Ok(tools) => {
+            let (help_status, help_message) = client.get_help_state().await;
+            if help_status == "unavailable" {
+                let message = if help_message.is_empty() {
+                    "Путь к выгрузке конфигурации 1С не задан"
+                } else {
+                    help_message.as_str()
+                };
+                Err(format!("Ошибка: {}", message))
+            } else {
+                Ok(format!("Подключено! ({})", tools.len()))
+            }
+        }
         Err(e) => Err(format!("Ошибка: {}", e)),
     }
 }

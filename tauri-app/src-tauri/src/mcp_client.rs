@@ -26,6 +26,42 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
+pub(crate) const BUILTIN_1C_SEARCH_SERVER_ID: &str = "builtin-1c-search";
+
+pub(crate) fn builtin_search_unavailable_reason(config: &McpServerConfig) -> Option<String> {
+    if config.id != BUILTIN_1C_SEARCH_SERVER_ID {
+        return None;
+    }
+
+    let config_path = config
+        .env
+        .as_ref()
+        .and_then(|env| env.get("ONEC_CONFIG_PATH"))
+        .map(|value| value.trim())
+        .unwrap_or("");
+
+    if config_path.is_empty() {
+        return Some("Путь к выгрузке конфигурации 1С не задан".to_string());
+    }
+
+    let path = std::path::Path::new(config_path);
+    if !path.exists() {
+        return Some(format!(
+            "Путь к выгрузке конфигурации 1С не найден: {}",
+            config_path
+        ));
+    }
+
+    if !path.is_dir() {
+        return Some(format!(
+            "Путь к выгрузке конфигурации 1С должен указывать на директорию: {}",
+            config_path
+        ));
+    }
+
+    None
+}
+
 #[async_trait]
 pub trait InternalMcpHandler: Send + Sync {
     async fn list_tools(&self) -> Vec<McpTool>;
@@ -35,12 +71,13 @@ pub trait InternalMcpHandler: Send + Sync {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
     method: String,
     params: Value,
-    id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +100,7 @@ struct HttpRpcResponse {
     body: String,
     rpc_response: Option<JsonRpcResponse>,
     session_id: Option<String>,
+    final_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,7 +299,7 @@ impl McpManager {
         });
 
         for config in all_configs {
-            let (status, last_checked) = if !config.enabled {
+            let (base_status, last_checked) = if !config.enabled {
                 ("disabled".to_string(), 0)
             } else if let Some((_, session)) = sessions.get(&config.id) {
                 let status = session.get_status_string().await;
@@ -282,11 +320,15 @@ impl McpManager {
                 ("stopped".to_string(), 0) // Enabled but not in sessions (failed to start or never started)
             };
 
-            crate::app_log!("[DEBUG] MCP Server status for {}: {}", config.id, status);
+            crate::app_log!(
+                "[DEBUG] MCP Server status for {}: {}",
+                config.id,
+                base_status
+            );
 
             // Извлекаем прогресс индексации для 1С:Справка и 1С:Поиск
             let (index_progress, index_message, help_status_str) =
-                if config.id == "builtin-1c-help" || config.id == "builtin-1c-search" {
+                if config.id == "builtin-1c-help" || config.id == BUILTIN_1C_SEARCH_SERVER_ID {
                     if let Some((_, session)) = sessions.get(&config.id) {
                         let progress = *session.help_progress.lock().await;
                         let message = session.help_message.lock().await.clone();
@@ -298,6 +340,26 @@ impl McpManager {
                 } else {
                     (0, String::new(), String::new())
                 };
+
+            let (index_progress, index_message, help_status_str) =
+                if config.id == BUILTIN_1C_SEARCH_SERVER_ID && help_status_str.is_empty() {
+                    if let Some(reason) = builtin_search_unavailable_reason(&config) {
+                        (0, reason, "unavailable".to_string())
+                    } else {
+                        (index_progress, index_message, help_status_str)
+                    }
+                } else {
+                    (index_progress, index_message, help_status_str)
+                };
+
+            let status = if config.enabled
+                && config.id == BUILTIN_1C_SEARCH_SERVER_ID
+                && help_status_str == "unavailable"
+            {
+                "error".to_string()
+            } else {
+                base_status
+            };
 
             statuses.push(McpServerStatus {
                 id: config.id.clone(),
@@ -432,7 +494,7 @@ impl McpClient {
     pub async fn list_tools(&self) -> Result<Vec<McpTool>, String> {
         // builtin-1c-search processes requests sequentially; a heavy find_references
         // may block the queue for tens of seconds, so match the call_tool timeout
-        let timeout_secs = if self.session.config.id == "builtin-1c-search" {
+        let timeout_secs = if self.session.config.id == BUILTIN_1C_SEARCH_SERVER_ID {
             120
         } else {
             60
@@ -446,7 +508,7 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, String> {
-        let timeout_secs = if self.session.config.id == "builtin-1c-search"
+        let timeout_secs = if self.session.config.id == BUILTIN_1C_SEARCH_SERVER_ID
             || self.session.config.id == "builtin-1c-naparnik"
         {
             120
@@ -463,12 +525,20 @@ impl McpClient {
             Err(_) => Err(format!("Timeout executing tool '{}'", name)),
         }
     }
+
+    pub async fn get_help_state(&self) -> (String, String) {
+        (
+            self.session.help_status.lock().await.clone(),
+            self.session.help_message.lock().await.clone(),
+        )
+    }
 }
 
 enum TransportImpl {
     Http {
         client: Client,
         url: String,
+        effective_url: Arc<tokio::sync::Mutex<Option<String>>>,
         login: Option<String>,
         password: Option<String>,
         extra_headers: std::collections::HashMap<String, String>,
@@ -482,6 +552,8 @@ enum TransportImpl {
     Stdio {
         tx: mpsc::Sender<JsonRpcRequest>,
         pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
+        initialized: Arc<AtomicBool>,
+        init_lock: Arc<tokio::sync::Mutex<()>>,
         // We keep the child here just to keep the process alive
         _child: Arc<Mutex<Child>>,
     },
@@ -520,6 +592,7 @@ impl McpSession {
                     .build()
                     .unwrap_or_default(),
                 url: config.url.unwrap_or_default(),
+                effective_url: Arc::new(tokio::sync::Mutex::new(None)),
                 login: config.login,
                 password: config.password,
                 extra_headers,
@@ -633,6 +706,24 @@ impl McpSession {
         }
     }
 
+    fn normalize_http_url_for_compare(url: &str) -> String {
+        url.trim().to_string()
+    }
+
+    fn should_update_effective_http_url(requested_url: &str, final_url: &str) -> bool {
+        let requested = Self::normalize_http_url_for_compare(requested_url);
+        let final_normalized = Self::normalize_http_url_for_compare(final_url);
+        !final_url.trim().is_empty() && requested != final_normalized
+    }
+
+    fn should_retry_stdio_with_initialize(error: &str) -> bool {
+        let lower = error.to_lowercase();
+        lower.contains("session initialization")
+            || lower.contains("call initialize first")
+            || lower.contains("not initialized")
+            || (lower.contains("initialize") && lower.contains("session"))
+    }
+
     fn parse_http_rpc_response(content_type: &str, body: &str) -> Option<JsonRpcResponse> {
         if content_type.contains("text/event-stream") {
             for line in body.lines() {
@@ -689,6 +780,7 @@ impl McpSession {
 
         let response = rb.send().await.map_err(|e| e.to_string())?;
         let status = response.status();
+        let final_url = response.url().to_string();
         let session_id = response
             .headers()
             .get("mcp-session-id")
@@ -712,6 +804,7 @@ impl McpSession {
             body,
             rpc_response,
             session_id,
+            final_url,
         })
     }
 
@@ -786,7 +879,7 @@ impl McpSession {
         login: &Option<String>,
         password: &Option<String>,
         extra_headers: &HashMap<String, String>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<(Option<String>, String), String> {
         let init_payload = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 0,
@@ -827,12 +920,13 @@ impl McpSession {
         }
 
         let session_id = init_response.session_id.clone();
+        let effective_url = init_response.final_url.clone();
         let initialized_notification =
             serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
 
         match Self::send_http_payload(
             client,
-            url,
+            &effective_url,
             login,
             password,
             extra_headers,
@@ -846,13 +940,13 @@ impl McpSession {
                 crate::app_log!(
                     "[MCP][HTTP] initialized notification returned HTTP {} for {}",
                     response.status.as_u16(),
-                    url
+                    effective_url
                 );
             }
             Err(error) => {
                 crate::app_log!(
                     "[MCP][HTTP] initialized notification failed for {}: {}",
-                    url,
+                    effective_url,
                     error
                 );
             }
@@ -861,14 +955,14 @@ impl McpSession {
 
         crate::app_log!(
             "[MCP][HTTP] Session initialized for {}{}",
-            url,
+            effective_url,
             session_id
                 .as_ref()
                 .map(|sid| format!(", id={}", sid))
                 .unwrap_or_default()
         );
 
-        Ok(session_id)
+        Ok((session_id, effective_url))
     }
 
     async fn new_stdio(config: McpServerConfig, debug_all: bool) -> Result<Self, String> {
@@ -1181,6 +1275,8 @@ impl McpSession {
         let (tx, mut rx) = mpsc::channel::<JsonRpcRequest>(32);
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let initialized = Arc::new(AtomicBool::new(false));
+        let init_lock = Arc::new(tokio::sync::Mutex::new(()));
 
         let logs = Arc::new(Mutex::new(VecDeque::with_capacity(100)));
         let logs_writer = logs.clone();
@@ -1373,6 +1469,8 @@ impl McpSession {
             transport: TransportImpl::Stdio {
                 tx,
                 pending_requests,
+                initialized,
+                init_lock,
                 _child: Arc::new(Mutex::new(child)),
             },
             next_id: std::sync::atomic::AtomicU64::new(1),
@@ -1381,6 +1479,136 @@ impl McpSession {
             help_progress,
             help_message,
         })
+    }
+
+    fn stdio_timeout_secs(&self) -> u64 {
+        if self.config.id == "builtin-1c-search" || self.config.id == "builtin-1c-naparnik" {
+            120
+        } else {
+            30
+        }
+    }
+
+    async fn send_stdio_request_message(
+        &self,
+        tx: &mpsc::Sender<JsonRpcRequest>,
+        pending_requests: &Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
+        req: JsonRpcRequest,
+    ) -> Result<Value, String> {
+        let id = req
+            .id
+            .ok_or_else(|| "JSON-RPC request id is missing".to_string())?;
+        let (auth_tx, auth_rx) = oneshot::channel();
+        {
+            let mut pending = pending_requests.lock().await;
+            pending.insert(id, auth_tx);
+        }
+
+        crate::app_log!(
+            "[MCP][{}] >>> Sending: {}",
+            self.config.id,
+            serde_json::to_string(&req).unwrap_or_default()
+        );
+        tx.send(req)
+            .await
+            .map_err(|_| "Failed to send request to MCP process".to_string())?;
+
+        match tokio::time::timeout(Duration::from_secs(self.stdio_timeout_secs()), auth_rx).await {
+            Ok(Ok(result)) => {
+                crate::app_log!("[MCP][{}] <<< Received result for id {}", self.config.id, id);
+                result
+            }
+            Ok(Err(_)) => {
+                crate::app_log!(
+                    "[MCP][{}][ERROR] Response channel closed for id {}",
+                    self.config.id,
+                    id
+                );
+                Err("Channel closed".to_string())
+            }
+            Err(_) => {
+                let mut pending = pending_requests.lock().await;
+                pending.remove(&id);
+                crate::app_log!(
+                    "[MCP][{}][ERROR] Request timed out for id {}",
+                    self.config.id,
+                    id
+                );
+                Err("Timeout waiting for MCP response".to_string())
+            }
+        }
+    }
+
+    async fn send_stdio_notification_message(
+        &self,
+        tx: &mpsc::Sender<JsonRpcRequest>,
+        notification: JsonRpcRequest,
+    ) -> Result<(), String> {
+        crate::app_log!(
+            "[MCP][{}] >>> Notification: {}",
+            self.config.id,
+            serde_json::to_string(&notification).unwrap_or_default()
+        );
+        tx.send(notification)
+            .await
+            .map_err(|_| "Failed to send notification to MCP process".to_string())
+    }
+
+    async fn initialize_stdio_session(
+        &self,
+        tx: &mpsc::Sender<JsonRpcRequest>,
+        pending_requests: &Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
+        initialized: &Arc<AtomicBool>,
+        init_lock: &Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<(), String> {
+        if initialized.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let _guard = init_lock.lock().await;
+        if initialized.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        crate::app_log!(
+            "[MCP][{}] Starting stdio initialize handshake",
+            self.config.id
+        );
+
+        let init_id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let init_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "initialize".to_string(),
+            params: json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "mini-ai-1c", "version": "1.0" }
+            }),
+            id: Some(init_id),
+        };
+        let _ = self
+            .send_stdio_request_message(tx, pending_requests, init_req)
+            .await?;
+
+        self.send_stdio_notification_message(
+            tx,
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                method: "notifications/initialized".to_string(),
+                params: json!({}),
+                id: None,
+            },
+        )
+        .await?;
+
+        initialized.store(true, Ordering::SeqCst);
+        crate::app_log!(
+            "[MCP][{}] Stdio initialize handshake completed",
+            self.config.id
+        );
+        Ok(())
     }
 
     async fn is_alive(&self) -> bool {
@@ -1403,7 +1631,7 @@ impl McpSession {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params: params.clone(),
-            id,
+            id: Some(id),
         };
         let req_payload = serde_json::to_value(&req).map_err(|e| e.to_string())?;
 
@@ -1411,6 +1639,7 @@ impl McpSession {
             TransportImpl::Http {
                 client,
                 url,
+                effective_url,
                 login,
                 password,
                 extra_headers,
@@ -1424,10 +1653,14 @@ impl McpSession {
                     state.clone()
                 };
                 let current_session_id = known_state.as_ref().and_then(|state| state.clone());
+                let current_url = {
+                    let effective = effective_url.lock().await;
+                    effective.clone().unwrap_or_else(|| url.clone())
+                };
 
                 let initial_response = match Self::send_http_payload(
                     client,
-                    url,
+                    &current_url,
                     login,
                     password,
                     extra_headers,
@@ -1444,6 +1677,11 @@ impl McpSession {
                         return Err(error);
                     }
                 };
+
+                if Self::should_update_effective_http_url(&current_url, &initial_response.final_url) {
+                    let mut effective = effective_url.lock().await;
+                    *effective = Some(initial_response.final_url.clone());
+                }
 
                 match Self::extract_http_result(&initial_response) {
                     Ok(result) => {
@@ -1475,17 +1713,17 @@ impl McpSession {
                         }
 
                         if current_session_id.is_some() {
-                            crate::app_log!("[MCP][HTTP] Refreshing MCP session for {}", url);
+                            crate::app_log!("[MCP][HTTP] Refreshing MCP session for {}", current_url);
                         } else {
                             crate::app_log!(
                                 "[MCP][HTTP] Falling back to initialize handshake for {}",
-                                url
+                                current_url
                             );
                         }
 
-                        let new_session_id = match Self::initialize_http_session(
+                        let (new_session_id, initialized_url) = match Self::initialize_http_session(
                             client,
-                            url,
+                            &initial_response.final_url,
                             login,
                             password,
                             extra_headers,
@@ -1504,10 +1742,14 @@ impl McpSession {
                             let mut state = http_state.lock().await;
                             *state = Some(new_session_id.clone());
                         }
+                        {
+                            let mut effective = effective_url.lock().await;
+                            *effective = Some(initialized_url.clone());
+                        }
 
                         let retry_response = match Self::send_http_payload(
                             client,
-                            url,
+                            &initialized_url,
                             login,
                             password,
                             extra_headers,
@@ -1524,6 +1766,12 @@ impl McpSession {
                                 return Err(error);
                             }
                         };
+
+                        if Self::should_update_effective_http_url(&initialized_url, &retry_response.final_url)
+                        {
+                            let mut effective = effective_url.lock().await;
+                            *effective = Some(retry_response.final_url.clone());
+                        }
 
                         match Self::extract_http_result(&retry_response) {
                             Ok(result) => {
@@ -1553,58 +1801,22 @@ impl McpSession {
             TransportImpl::Stdio {
                 tx,
                 pending_requests,
+                initialized,
+                init_lock,
                 ..
             } => {
-                let (auth_tx, auth_rx) = oneshot::channel();
-                {
-                    let mut pending = pending_requests.lock().await;
-                    pending.insert(id, auth_tx);
-                }
-
-                crate::app_log!(
-                    "[MCP][{}] >>> Sending: {}",
-                    self.config.id,
-                    serde_json::to_string(&req).unwrap_or_default()
-                );
-                tx.send(req)
-                    .await
-                    .map_err(|_| "Failed to send request to MCP process".to_string())?;
-
-                // builtin-1c-search: ripgrep over large configs; builtin-1c-naparnik: network requests to ИТС
-                let timeout_secs = if self.config.id == "builtin-1c-search"
-                    || self.config.id == "builtin-1c-naparnik"
-                {
-                    120
-                } else {
-                    30
-                };
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), auth_rx).await {
-                    Ok(Ok(result)) => {
-                        crate::app_log!(
-                            "[MCP][{}] <<< Received result for id {}",
-                            self.config.id,
-                            id
-                        );
-                        result
+                let first_attempt = self
+                    .send_stdio_request_message(tx, pending_requests, req.clone())
+                    .await;
+                match first_attempt {
+                    Ok(result) => Ok(result),
+                    Err(error) if Self::should_retry_stdio_with_initialize(&error) => {
+                        initialized.store(false, Ordering::SeqCst);
+                        self.initialize_stdio_session(tx, pending_requests, initialized, init_lock)
+                            .await?;
+                        self.send_stdio_request_message(tx, pending_requests, req).await
                     }
-                    Ok(Err(_)) => {
-                        crate::app_log!(
-                            "[MCP][{}][ERROR] Response channel closed for id {}",
-                            self.config.id,
-                            id
-                        );
-                        Err("Channel closed".to_string())
-                    }
-                    Err(_) => {
-                        let mut pending = pending_requests.lock().await;
-                        pending.remove(&id);
-                        crate::app_log!(
-                            "[MCP][{}][ERROR] Request timed out for id {}",
-                            self.config.id,
-                            id
-                        );
-                        Err("Timeout waiting for MCP response".to_string())
-                    }
+                    Err(error) => Err(error),
                 }
             }
             TransportImpl::Internal { handler } => handler.call_tool(method, params.clone()).await,
@@ -1696,8 +1908,14 @@ impl McpSession {
     }
 
     async fn reset_http_state(&self) {
-        if let TransportImpl::Http { http_state, .. } = &self.transport {
+        if let TransportImpl::Http {
+            http_state,
+            effective_url,
+            ..
+        } = &self.transport
+        {
             *http_state.lock().await = None;
+            *effective_url.lock().await = None;
         }
     }
 
@@ -1751,6 +1969,7 @@ mod tests {
                 id: Some(1),
             }),
             session_id: None,
+            final_url: "http://localhost/mcp".to_string(),
         };
 
         assert!(McpSession::should_retry_with_initialize(&response));
@@ -1763,6 +1982,7 @@ mod tests {
             body: "MCP Streamable HTTP session missing. Send initialize first.".to_string(),
             rpc_response: None,
             session_id: None,
+            final_url: "http://localhost/mcp/".to_string(),
         };
 
         assert!(McpSession::should_retry_with_initialize(&response));
@@ -1775,9 +1995,44 @@ mod tests {
             body: "Unauthorized".to_string(),
             rpc_response: None,
             session_id: None,
+            final_url: "http://localhost/mcp".to_string(),
         };
 
         assert!(!McpSession::should_retry_with_initialize(&response));
+    }
+
+    #[test]
+    fn keeps_redirected_http_url_with_trailing_slash() {
+        assert!(McpSession::should_update_effective_http_url(
+            "http://localhost:8004/mcp",
+            "http://localhost:8004/mcp/"
+        ));
+    }
+
+    #[test]
+    fn detects_builtin_search_path_validation_errors() {
+        let missing_path = McpServerConfig {
+            id: BUILTIN_1C_SEARCH_SERVER_ID.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            builtin_search_unavailable_reason(&missing_path),
+            Some("Путь к выгрузке конфигурации 1С не задан".to_string())
+        );
+
+        let invalid_path = McpServerConfig {
+            id: BUILTIN_1C_SEARCH_SERVER_ID.to_string(),
+            env: Some(HashMap::from([(
+                "ONEC_CONFIG_PATH".to_string(),
+                "Z:\\definitely-missing-mini-ai-1c".to_string(),
+            )])),
+            ..Default::default()
+        };
+        assert!(
+            builtin_search_unavailable_reason(&invalid_path)
+                .expect("expected invalid path error")
+                .contains("не найден")
+        );
     }
 
     #[test]
