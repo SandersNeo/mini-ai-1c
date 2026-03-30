@@ -1,6 +1,6 @@
 use crate::ai::{extract_bsl_code, stream_chat_completion, ApiMessage};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Simplified tool call structure from frontend
@@ -53,6 +53,14 @@ const CONTEXT_PRUNE_THRESHOLD: usize = 7000;
 /// Maximum chars per tool result to prevent a single large response from blowing up context.
 /// 8000 chars ≈ 2000 tokens per tool result.
 const MAX_TOOL_RESULT_CHARS: usize = 8000;
+
+fn is_tool_result_cacheable(server_id: &str) -> bool {
+    matches!(server_id, "builtin-1c-metadata")
+}
+
+fn build_tool_cache_key(server_id: &str, tool_name: &str, raw_arguments: &str) -> String {
+    format!("{server_id}::{tool_name}::{raw_arguments}")
+}
 
 /// Estimates token count for a slice of messages (chars / 4 approximation).
 fn estimate_tokens(messages: &[ApiMessage]) -> usize {
@@ -284,6 +292,7 @@ pub async fn stream_chat(
         let mut current_iteration = 0;
         // Guard: ask AI to write text response only once (when it returns thinking-only with no text)
         let mut asked_for_text_response = false;
+        let mut tool_result_cache: HashMap<String, String> = HashMap::new();
 
         loop {
             current_iteration += 1;
@@ -367,9 +376,9 @@ pub async fn stream_chat(
                     let tool_name = &tool_call.function.name;
                     let _ =
                         task_app_handle.emit("chat-status", format!("Вызов MCP: {}...", tool_name));
+                    let raw_arguments = tool_call.function.arguments.clone();
                     let arguments: serde_json::Value =
-                        serde_json::from_str(&tool_call.function.arguments)
-                            .unwrap_or(serde_json::json!({}));
+                        serde_json::from_str(&raw_arguments).unwrap_or(serde_json::json!({}));
 
                     crate::app_log!(
                         "[AI][TOOL] Executing: {} with args: {}",
@@ -408,9 +417,37 @@ pub async fn stream_chat(
                                 });
 
                                 if let Some(t) = target_tool {
+                                    let cache_key =
+                                        build_tool_cache_key(&config.id, &t.name, &raw_arguments);
+                                    if is_tool_result_cacheable(&config.id) {
+                                        if let Some(cached_result) =
+                                            tool_result_cache.get(&cache_key)
+                                        {
+                                            tool_result = cached_result.clone();
+                                            crate::app_log!(
+                                                "[AI][TOOL][CACHE] Reusing cached result for {} ({})",
+                                                t.name,
+                                                config.id
+                                            );
+                                            let _ = task_app_handle.emit(
+                                                "tool-call-completed",
+                                                serde_json::json!({
+                                                    "id": tool_call.id,
+                                                    "status": "done",
+                                                    "result": tool_result,
+                                                    "cached": true
+                                                }),
+                                            );
+                                            break;
+                                        }
+                                    }
                                     match client.call_tool(&t.name, arguments.clone()).await {
                                         Ok(res) => {
                                             tool_result = res.to_string();
+                                            if is_tool_result_cacheable(&config.id) {
+                                                tool_result_cache
+                                                    .insert(cache_key, tool_result.clone());
+                                            }
                                             let _ = task_app_handle.emit(
                                                 "tool-call-completed",
                                                 serde_json::json!({
