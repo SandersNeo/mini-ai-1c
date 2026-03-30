@@ -289,9 +289,7 @@ pub(crate) fn find_exe() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join("editor-bridge").join("EditorBridge.exe");
-            if let Some(candidate) =
-                resolve_bridge_candidate(p, "target/debug/editor-bridge")
-            {
+            if let Some(candidate) = resolve_bridge_candidate(p, "target/debug/editor-bridge") {
                 return Ok(candidate);
             }
         }

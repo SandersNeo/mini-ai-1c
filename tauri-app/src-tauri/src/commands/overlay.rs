@@ -414,7 +414,8 @@ pub fn focus_main_window_for_overlay_chat(app_handle: AppHandle) -> Result<(), S
     // Временно ставим topmost чтобы окно вышло вперёд, затем сразу восстанавливаем
     main.set_always_on_top(true).map_err(|e| e.to_string())?;
     main.set_focus().map_err(|e| e.to_string())?;
-    main.set_always_on_top(was_always_on_top).map_err(|e| e.to_string())?;
+    main.set_always_on_top(was_always_on_top)
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

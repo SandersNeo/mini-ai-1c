@@ -1515,7 +1515,11 @@ impl McpSession {
 
         match tokio::time::timeout(Duration::from_secs(self.stdio_timeout_secs()), auth_rx).await {
             Ok(Ok(result)) => {
-                crate::app_log!("[MCP][{}] <<< Received result for id {}", self.config.id, id);
+                crate::app_log!(
+                    "[MCP][{}] <<< Received result for id {}",
+                    self.config.id,
+                    id
+                );
                 result
             }
             Ok(Err(_)) => {
@@ -1678,7 +1682,8 @@ impl McpSession {
                     }
                 };
 
-                if Self::should_update_effective_http_url(&current_url, &initial_response.final_url) {
+                if Self::should_update_effective_http_url(&current_url, &initial_response.final_url)
+                {
                     let mut effective = effective_url.lock().await;
                     *effective = Some(initial_response.final_url.clone());
                 }
@@ -1713,7 +1718,10 @@ impl McpSession {
                         }
 
                         if current_session_id.is_some() {
-                            crate::app_log!("[MCP][HTTP] Refreshing MCP session for {}", current_url);
+                            crate::app_log!(
+                                "[MCP][HTTP] Refreshing MCP session for {}",
+                                current_url
+                            );
                         } else {
                             crate::app_log!(
                                 "[MCP][HTTP] Falling back to initialize handshake for {}",
@@ -1767,8 +1775,10 @@ impl McpSession {
                             }
                         };
 
-                        if Self::should_update_effective_http_url(&initialized_url, &retry_response.final_url)
-                        {
+                        if Self::should_update_effective_http_url(
+                            &initialized_url,
+                            &retry_response.final_url,
+                        ) {
                             let mut effective = effective_url.lock().await;
                             *effective = Some(retry_response.final_url.clone());
                         }
@@ -1814,7 +1824,8 @@ impl McpSession {
                         initialized.store(false, Ordering::SeqCst);
                         self.initialize_stdio_session(tx, pending_requests, initialized, init_lock)
                             .await?;
-                        self.send_stdio_request_message(tx, pending_requests, req).await
+                        self.send_stdio_request_message(tx, pending_requests, req)
+                            .await
                     }
                     Err(error) => Err(error),
                 }
@@ -2028,11 +2039,9 @@ mod tests {
             )])),
             ..Default::default()
         };
-        assert!(
-            builtin_search_unavailable_reason(&invalid_path)
-                .expect("expected invalid path error")
-                .contains("не найден")
-        );
+        assert!(builtin_search_unavailable_reason(&invalid_path)
+            .expect("expected invalid path error")
+            .contains("не найден"));
     }
 
     #[test]
