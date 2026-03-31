@@ -142,6 +142,8 @@ export interface AppSettings {
     slash_commands: SlashCommand[];
     max_agent_iterations?: number | null;
     theme?: 'light' | 'dark';
+    context_compress_strategy?: 'disabled' | 'sliding_window' | 'summarize';
+    max_context_messages?: number;
 }
 
 export interface BslDiagnosticItem {

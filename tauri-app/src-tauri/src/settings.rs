@@ -265,6 +265,14 @@ pub struct AppSettings {
     /// Тема оформления (light / dark)
     #[serde(default)]
     pub theme: Option<String>,
+
+    /// Стратегия сжатия контекста: "" / "sliding_window" / "summarize"
+    #[serde(default)]
+    pub context_compress_strategy: String,
+
+    /// Порог сжатия (кол-во сообщений диалога, default 40)
+    #[serde(default)]
+    pub max_context_messages: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

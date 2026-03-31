@@ -694,53 +694,6 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                 </div>
                             )}
 
-                            {/* Context compression strategy */}
-                            <div className="pt-3 px-1 space-y-2">
-                                <div>
-                                    <span className="text-xs text-zinc-400 font-medium">Сжатие контекста</span>
-                                    <p className="text-[10px] text-zinc-600 mt-0.5">
-                                        Что делать когда история чата превышает лимит сообщений.
-                                    </p>
-                                </div>
-                                {/* Segmented control */}
-                                <div className="flex rounded-lg overflow-hidden border border-zinc-700 text-[11px] font-medium">
-                                    {(['disabled', 'sliding_window', 'summarize'] as const).map((opt, i) => {
-                                        const labels = { disabled: 'Выкл', sliding_window: 'Окно', summarize: 'Сжатие' };
-                                        const hints = {
-                                            disabled: 'Без сжатия',
-                                            sliding_window: 'Удаляет середину — первое и последние сообщения остаются',
-                                            summarize: 'LLM создаёт конспект диалога (не работает с QwenCLI / Напарником)',
-                                        };
-                                        const active = (editForm.context_compress_strategy || 'disabled') === opt;
-                                        return (
-                                            <button
-                                                key={opt}
-                                                type="button"
-                                                title={hints[opt]}
-                                                onClick={() => setEditForm({ ...editForm, context_compress_strategy: opt })}
-                                                className={`flex-1 py-1.5 transition-colors ${i > 0 ? 'border-l border-zinc-700' : ''} ${active ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}
-                                            >
-                                                {labels[opt]}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                                {(editForm.context_compress_strategy === 'sliding_window' || editForm.context_compress_strategy === 'summarize') && (
-                                    <div className="flex items-center justify-between">
-                                        <label className="text-xs text-zinc-500">
-                                            Порог (кол-во сообщений):
-                                        </label>
-                                        <input
-                                            type="number"
-                                            min={10}
-                                            max={200}
-                                            value={editForm.max_context_messages ?? 40}
-                                            onChange={e => setEditForm({ ...editForm, max_context_messages: parseInt(e.target.value) || 40 })}
-                                            className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 text-right focus:outline-none focus:border-zinc-500"
-                                        />
-                                    </div>
-                                )}
-                            </div>
                         </div>}
 
                         {/* Save Button */}

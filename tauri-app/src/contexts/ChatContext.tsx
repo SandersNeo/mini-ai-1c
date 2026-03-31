@@ -4,6 +4,7 @@ import * as api from '../api';
 import { ConfiguratorTitleContext, formatConfiguratorContextForLLM } from '../utils/configurator';
 import { messageQueueService, QueuedMessage } from '../services/MessageQueueService';
 import { useProfiles } from './ProfileContext';
+import { useSettings } from './SettingsContext';
 import { useChatSessions, ChatSession } from '../hooks/useChatSessions';
 
 export type { ChatSession };
@@ -97,6 +98,7 @@ const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
     const { activeProfile } = useProfiles();
+    const { settings } = useSettings();
     const {
         sessions,
         activeId: activeSessionId,
@@ -523,10 +525,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
-            // Context compression based on active profile strategy
+            // Context compression — global setting
             let currentMessages = messages;
-            const strategy = activeProfile?.context_compress_strategy;
-            const maxMsgs = activeProfile?.max_context_messages ?? 40;
+            const strategy = settings?.context_compress_strategy;
+            const maxMsgs = settings?.max_context_messages ?? 40;
 
             if (strategy === 'sliding_window') {
                 const { compressed, removedCount } = slidingWindowCompress(currentMessages, maxMsgs);
