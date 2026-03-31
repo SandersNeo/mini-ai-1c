@@ -434,7 +434,13 @@ pub fn start_settings_watcher(app_handle: tauri::AppHandle) {
         let (tx, rx) = std::sync::mpsc::channel();
 
         // Use RecommendedWatcher
-        let mut watcher = RecommendedWatcher::new(tx, Config::default()).unwrap();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                crate::app_log!(force: true, "Failed to create file watcher: {}", e);
+                return;
+            }
+        };
 
         // Watch the parent directory because atomic writes (rename) might change inode
         let config_dir = crate::settings::get_settings_dir();

@@ -33,7 +33,7 @@ async fn wait_for_qwen_request_slot(profile_id: &str, app_handle: &tauri::AppHan
     let wait_for = {
         let mut slots = qwen_request_slots()
             .lock()
-            .expect("Qwen request slots lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let entry = slots.entry(profile_id.to_string()).or_insert(now);
         let send_at = if *entry > now { *entry } else { now };

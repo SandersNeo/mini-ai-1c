@@ -54,8 +54,13 @@ pub fn install_mouse_hook(app_handle: AppHandle) {
         let _ = APP_HANDLE.set(app_handle);
 
         unsafe {
-            let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_callback), None, 0)
-                .expect("Failed to install WH_MOUSE_LL hook");
+            let hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_callback), None, 0) {
+                Ok(h) => h,
+                Err(e) => {
+                    crate::app_log!(force: true, "[MouseHook] Failed to install WH_MOUSE_LL hook: {}", e);
+                    return;
+                }
+            };
 
             HOOK_INSTALLED.store(true, Ordering::Relaxed);
             crate::app_log!("[MouseHook] WH_MOUSE_LL installed");
