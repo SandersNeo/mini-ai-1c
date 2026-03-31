@@ -3,6 +3,10 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from '../api';
 import { ConfiguratorTitleContext, formatConfiguratorContextForLLM } from '../utils/configurator';
 import { messageQueueService, QueuedMessage } from '../services/MessageQueueService';
+import { useProfiles } from './ProfileContext';
+import { useChatSessions, ChatSession } from '../hooks/useChatSessions';
+
+export type { ChatSession };
 
 export interface ToolCall {
     id: string;
@@ -41,12 +45,31 @@ export interface ChatMessage {
 // Helper to generate unique IDs
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
+function compressMessages(
+    msgs: ChatMessage[],
+    maxMessages: number
+): { compressed: ChatMessage[]; removedCount: number } {
+    const systemMsgs = msgs.filter(m => m.role === 'system');
+    const dialogMsgs = msgs.filter(m => m.role !== 'system');
+    if (dialogMsgs.length <= maxMessages) {
+        return { compressed: msgs, removedCount: 0 };
+    }
+    const keep = dialogMsgs.slice(dialogMsgs.length - maxMessages);
+    const removedCount = dialogMsgs.length - maxMessages;
+    return { compressed: [...systemMsgs, ...keep], removedCount };
+}
+
 interface ChatContextType {
     messages: ChatMessage[];
     isLoading: boolean;
     chatStatus: string;
     currentIteration: number;
     messageQueue: QueuedMessage[];
+    sessions: ChatSession[];
+    activeSessionId: string | null;
+    createNewChat: () => void;
+    switchChat: (id: string) => void;
+    deleteChat: (id: string) => void;
     sendMessage: (content: string, codeContext?: string, diagnostics?: string[], displayContent?: string, configuratorCtx?: ConfiguratorTitleContext | null) => Promise<void>;
     stopChat: () => Promise<void>;
     clearChat: () => void;
@@ -62,7 +85,20 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const { activeProfile } = useProfiles();
+    const {
+        sessions,
+        activeId: activeSessionId,
+        activeSession,
+        createSession,
+        switchSession,
+        deleteSession,
+        updateSessionMessages,
+    } = useChatSessions();
+
+    const [messages, setMessages] = useState<ChatMessage[]>(() => {
+        return activeSession?.messages ?? [];
+    });
     const [isLoading, setIsLoading] = useState(false);
     const [chatStatus, setChatStatus] = useState('');
     const [currentIteration, setCurrentIteration] = useState(0);
@@ -144,6 +180,49 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
         flushChunkBuffer();
     }, [flushChunkBuffer]);
+
+    // Создать начальную сессию при первом запуске (если нет активной)
+    useEffect(() => {
+        if (!activeSessionId) {
+            createSession();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // При смене активной сессии — загружаем её сообщения
+    const prevActiveIdRef = useRef(activeSessionId);
+    useEffect(() => {
+        if (prevActiveIdRef.current !== activeSessionId) {
+            prevActiveIdRef.current = activeSessionId;
+            setMessages(activeSession?.messages ?? []);
+        }
+    }, [activeSessionId, activeSession]);
+
+    // Сохраняем сообщения в активную сессию при каждом изменении
+    const messagesRef = useRef(messages);
+    useEffect(() => {
+        messagesRef.current = messages;
+        updateSessionMessages(activeSessionId, messages);
+    }, [messages, activeSessionId, updateSessionMessages]);
+
+    // Создать новый чат
+    const createNewChat = useCallback(() => {
+        setMessages([]);
+        createSession();
+        api.clearNaparnikSession().catch(() => {/* non-critical */});
+    }, [createSession]);
+
+    // Переключить чат
+    const switchChat = useCallback((id: string) => {
+        if (id === activeSessionId) return;
+        switchSession(id);
+        // messages set via useEffect above
+    }, [activeSessionId, switchSession]);
+
+    // Удалить чат
+    const deleteChat = useCallback((id: string) => {
+        deleteSession(id);
+    }, [deleteSession]);
 
     // Подписка на изменения очереди
     useEffect(() => {
@@ -433,11 +512,30 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
+            // Auto-compress context if enabled for active profile
+            let currentMessages = messages;
+            if (activeProfile?.auto_compress_context) {
+                const maxMsgs = activeProfile.max_context_messages ?? 40;
+                const { compressed, removedCount } = compressMessages(currentMessages, maxMsgs);
+                if (removedCount > 0) {
+                    const noticeMsg: ChatMessage = {
+                        id: generateId(),
+                        role: 'system',
+                        content: `⚡ Контекст сжат: удалено ${removedCount} старых сообщений`,
+                        parts: [{ type: 'text', content: `⚡ Контекст сжат: удалено ${removedCount} старых сообщений` }],
+                        timestamp: Date.now(),
+                        variant: 'info'
+                    };
+                    currentMessages = [noticeMsg, ...compressed];
+                    setMessages(currentMessages);
+                }
+            }
+
             // Construct message history (system messages are UI-only, not sent to backend)
             // IMPORTANT: tool_calls + tool results must be preserved for multi-turn tool use.
             // Assistant messages with tool_calls are expanded to include synthetic tool result
             // messages so the LLM gets a valid conversation history.
-            const payloadMessages: api.ChatMessage[] = messages
+            const payloadMessages: api.ChatMessage[] = currentMessages
                 .filter(m => m.role !== 'system')
                 .flatMap(m => {
                     const msg: api.ChatMessage = {
@@ -499,7 +597,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             });
             setIsLoading(false);
         }
-    }, [isLoading, messages]);
+    }, [isLoading, messages, activeProfile]);
 
     // Дренирование очереди: срабатывает когда isLoading переходит false
     // useEffect гарантирует что sendMessage уже видит isLoading=false
@@ -528,9 +626,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setMessages([]);
         setChatStatus('');
         setIsLoading(false);
+        createSession();
         // Reset Naparnik conversation session if provider is OneCNaparnik
         api.clearNaparnikSession().catch(() => {/* non-critical */});
-    }, []);
+    }, [createSession]);
 
     const addSystemMessage = useCallback((content: string, variant?: 'warning' | 'info') => {
         setMessages(prev => [
@@ -666,6 +765,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             chatStatus,
             currentIteration,
             messageQueue,
+            sessions,
+            activeSessionId,
+            createNewChat,
+            switchChat,
+            deleteChat,
             sendMessage,
             stopChat,
             clearChat,

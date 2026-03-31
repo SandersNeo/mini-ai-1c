@@ -112,6 +112,9 @@ pub fn run() {
             cli_logout,
             cli_get_status,
             cli_refresh_usage,
+            // Settings export/import
+            commands::settings::export_settings,
+            commands::settings::import_settings,
             // 1С:Напарник
             clear_naparnik_session,
             // Scintilla diagnostics

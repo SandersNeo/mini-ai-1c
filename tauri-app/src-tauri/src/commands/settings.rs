@@ -64,6 +64,49 @@ pub fn check_node_version_cmd() -> Option<String> {
     }
 }
 
+/// Export settings as JSON string without sensitive data
+#[tauri::command]
+pub fn export_settings() -> Result<String, String> {
+    let mut safe_settings = settings::load_settings();
+
+    // Clear sensitive fields from mcp_servers
+    for server in safe_settings.mcp_servers.iter_mut() {
+        server.login = None;
+        server.password = None;
+        server.headers = None;
+        server.env = None;
+    }
+
+    // Clear active_llm_profile (profiles are not exported)
+    safe_settings.active_llm_profile = String::new();
+
+    serde_json::to_string_pretty(&safe_settings).map_err(|e| e.to_string())
+}
+
+/// Import settings from JSON string, preserving credentials from current settings
+#[tauri::command]
+pub fn import_settings(json_data: String) -> Result<(), String> {
+    let mut imported: AppSettings =
+        serde_json::from_str(&json_data).map_err(|e| format!("Ошибка парсинга JSON: {}", e))?;
+
+    let current = settings::load_settings();
+
+    // Restore credentials for servers that exist in current settings
+    for server in imported.mcp_servers.iter_mut() {
+        if let Some(current_server) = current.mcp_servers.iter().find(|s| s.id == server.id) {
+            server.login = current_server.login.clone();
+            server.password = current_server.password.clone();
+            server.headers = current_server.headers.clone();
+            server.env = current_server.env.clone();
+        }
+    }
+
+    // Restore active_llm_profile from current settings
+    imported.active_llm_profile = current.active_llm_profile.clone();
+
+    settings::save_settings(&imported)
+}
+
 /// Check if Java is installed and available in PATH
 #[tauri::command]
 pub fn check_java_cmd() -> bool {

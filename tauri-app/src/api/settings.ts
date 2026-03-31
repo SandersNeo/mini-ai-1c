@@ -16,3 +16,11 @@ export async function getSettings(): Promise<AppSettings> {
 export async function saveSettings(newSettings: AppSettings): Promise<void> {
     return await invoke('save_settings', { newSettings });
 }
+
+export async function exportSettings(): Promise<string> {
+    return await invoke<string>('export_settings');
+}
+
+export async function importSettings(jsonData: string): Promise<void> {
+    await invoke<void>('import_settings', { jsonData });
+}

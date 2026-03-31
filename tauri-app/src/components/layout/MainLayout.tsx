@@ -13,6 +13,7 @@ import { SettingsPanel } from '../SettingsPanel';
 import { ConflictDialog } from '../ui/ConflictDialog';
 import { Header } from './Header';
 import { ChatArea } from '../chat/ChatArea';
+import { ChatSessionsSidebar } from '../chat/ChatSessionsSidebar';
 import { OnboardingWizard } from '../Onboarding/OnboardingWizard';
 import type { OverlayQuickActionSessionPayload } from '../../types/quickActionSessions';
 import logo from '../../assets/logo.png';
@@ -35,10 +36,11 @@ interface OverlayExplainPayload {
 export function MainLayout() {
     const { settings } = useSettings();
     const { status: bslStatus, analyzeCode } = useBsl();
-    const { clearChat, isLoading } = useChat();
+    const { clearChat, isLoading, sessions, activeSessionId, createNewChat, switchChat, deleteChat } = useChat();
     const { pasteCode, checkSelection } = useConfigurator();
 
     const [viewMode, setViewMode] = useState<'assistant' | 'split' | 'code'>('assistant');
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
     const [nodeAvailable, setNodeAvailable] = useState<boolean | null>(null);
     const [settingsTab, setSettingsTab] = useState<'llm' | 'configurator' | 'bsl' | 'mcp' | 'debug' | undefined>(undefined);
@@ -417,6 +419,15 @@ export function MainLayout() {
 
                 <div className="flex flex-1 overflow-hidden bg-[#09090b] relative">
                     <div className={`flex flex-1 overflow-hidden transition-all duration-300 ${viewMode === 'code' ? 'hidden' : 'opacity-100'}`}>
+                        <ChatSessionsSidebar
+                            sessions={sessions}
+                            activeId={activeSessionId}
+                            onSwitch={switchChat}
+                            onNew={createNewChat}
+                            onDelete={deleteChat}
+                            collapsed={sidebarCollapsed}
+                            onToggle={() => setSidebarCollapsed(v => !v)}
+                        />
                         <ChatArea
                             originalCode={uiBaselineCode}
                             modifiedCode={modifiedCode}

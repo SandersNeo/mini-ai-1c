@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Bug, FlaskConical, Save } from 'lucide-react';
 import { AppSettings } from '../../types/settings';
 import { setConfiguratorRdpMode } from '../../api/configurator';
+import { exportSettings, importSettings } from '../../api/settings';
 
 interface DebugTabProps {
     settings: AppSettings;
@@ -22,6 +23,8 @@ export function DebugTab({
     saveDebugLogs,
     currentProvider
 }: DebugTabProps) {
+    const [exportImportStatus, setExportImportStatus] = useState<string>('');
+
     const bridgeEnabled = settings.configurator?.editor_bridge_enabled ?? false;
     const rdpMode = settings.configurator?.rdp_mode ?? false;
 
@@ -39,6 +42,47 @@ export function DebugTab({
         const newValue = !rdpMode;
         updateConfigurator({ rdp_mode: newValue });
         setConfiguratorRdpMode(newValue).catch(() => {});
+    };
+
+    const handleExport = async () => {
+        try {
+            const json = await exportSettings();
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const date = new Date();
+            const dateStr = date.getFullYear().toString() +
+                String(date.getMonth() + 1).padStart(2, '0') +
+                String(date.getDate()).padStart(2, '0');
+            a.href = url;
+            a.download = `mini-ai-1c-config-${dateStr}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            setExportImportStatus('✓ Настройки экспортированы.');
+        } catch (e) {
+            setExportImportStatus(`Ошибка экспорта: ${e}`);
+        }
+    };
+
+    const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            JSON.parse(text); // валидация JSON
+            const confirmed = window.confirm(
+                'Импортировать настройки? Текущая конфигурация будет заменена (API-ключи сохранятся).'
+            );
+            if (!confirmed) {
+                e.target.value = '';
+                return;
+            }
+            await importSettings(text);
+            setExportImportStatus('✓ Настройки импортированы. Перезагрузи приложение.');
+        } catch (err) {
+            setExportImportStatus(`Ошибка импорта: ${err}`);
+        }
+        e.target.value = '';
     };
 
     return (
@@ -201,6 +245,37 @@ export function DebugTab({
                                 Сохранить логи
                             </button>
                         </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h3 className="mb-4 flex items-center gap-2 text-lg font-medium text-zinc-100">
+                        Экспорт / Импорт настроек
+                    </h3>
+
+                    <div className="space-y-4 rounded-xl border border-zinc-700 bg-zinc-800/50 p-5">
+                        <p className="text-sm text-zinc-400">
+                            Перенос конфигурации между компьютерами. API-ключи и пароли в экспорт не включаются.
+                        </p>
+
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                onClick={handleExport}
+                                className="rounded-lg border border-zinc-600 bg-zinc-700 px-3 py-1.5 text-xs text-zinc-200 transition-colors hover:bg-zinc-600"
+                            >
+                                📦 Экспорт настроек
+                            </button>
+                            <label className="cursor-pointer rounded-lg border border-zinc-600 bg-zinc-700 px-3 py-1.5 text-xs text-zinc-200 transition-colors hover:bg-zinc-600">
+                                📤 Импорт настроек
+                                <input type="file" accept=".json" onChange={handleImport} style={{ display: 'none' }} />
+                            </label>
+                        </div>
+
+                        {exportImportStatus && (
+                            <p className={`text-xs ${exportImportStatus.startsWith('✓') ? 'text-green-400' : 'text-red-400'}`}>
+                                {exportImportStatus}
+                            </p>
+                        )}
                     </div>
                 </section>
             </div>

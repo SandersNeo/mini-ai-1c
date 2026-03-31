@@ -56,6 +56,10 @@ pub struct LLMProfile {
     pub disable_streaming: Option<bool>,
     #[serde(default)]
     pub stream_timeout_secs: Option<u32>,
+    #[serde(default)]
+    pub auto_compress_context: bool,
+    #[serde(default)]
+    pub max_context_messages: Option<u32>,
 }
 
 impl LLMProfile {
@@ -74,6 +78,8 @@ impl LLMProfile {
             enable_thinking: None,
             disable_streaming: None,
             stream_timeout_secs: None,
+            auto_compress_context: false,
+            max_context_messages: None,
         }
     }
 

@@ -693,6 +693,38 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                     </button>
                                 </div>
                             )}
+
+                            {/* Auto-compress context */}
+                            <div className="flex items-center justify-between pt-3 px-1">
+                                <div>
+                                    <span className="text-xs text-zinc-400 font-medium">Автоматическое сжатие контекста</span>
+                                    <p className="text-[10px] text-zinc-600 mt-0.5">
+                                        Удаляет старые сообщения при превышении лимита. Системные сообщения сохраняются.
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setEditForm({ ...editForm, auto_compress_context: !editForm.auto_compress_context })}
+                                    className={`relative w-9 h-5 rounded-full transition-colors focus:outline-none ${editForm.auto_compress_context ? 'bg-blue-500' : 'bg-zinc-700'}`}
+                                >
+                                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${editForm.auto_compress_context ? 'translate-x-4' : 'translate-x-0'}`} />
+                                </button>
+                            </div>
+                            {editForm.auto_compress_context && (
+                                <div className="flex items-center justify-between pt-2 px-1">
+                                    <label className="text-xs text-zinc-500">
+                                        Макс. сообщений в истории:
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={10}
+                                        max={200}
+                                        value={editForm.max_context_messages ?? 40}
+                                        onChange={e => setEditForm({ ...editForm, max_context_messages: parseInt(e.target.value) || 40 })}
+                                        className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 text-right focus:outline-none focus:border-zinc-500"
+                                    />
+                                </div>
+                            )}
                         </div>}
 
                         {/* Save Button */}

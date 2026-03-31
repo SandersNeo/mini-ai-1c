@@ -14,6 +14,8 @@ export interface LLMProfile {
     enable_thinking?: boolean;
     disable_streaming?: boolean;
     stream_timeout_secs?: number;
+    auto_compress_context?: boolean;
+    max_context_messages?: number;
     provider_subtype?: 'cli';
     cli_info?: CliProviderInfo;
 }
