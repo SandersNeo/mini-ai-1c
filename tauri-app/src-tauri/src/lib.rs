@@ -116,6 +116,8 @@ pub fn run() {
             // Settings export/import
             commands::settings::export_settings,
             commands::settings::import_settings,
+            commands::settings::validate_import_settings_file,
+            commands::settings::import_settings_from_file,
             // 1С:Напарник
             clear_naparnik_session,
             // Scintilla diagnostics

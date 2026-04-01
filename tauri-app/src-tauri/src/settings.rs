@@ -11,6 +11,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_configurator_window_title_pattern() -> String {
+    "Конфигуратор".to_string()
+}
+
+fn is_default_configurator_window_title_pattern(value: &String) -> bool {
+    value.trim().is_empty() || value == &default_configurator_window_title_pattern()
+}
+
 fn default_addition_marker() -> String {
     "// Доработка START (Добавление) - {datetime}\n{newCode}\n// Доработка END".to_string()
 }
@@ -137,10 +145,18 @@ fn default_slash_commands() -> Vec<SlashCommand> {
 /// Settings for 1C Configurator integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfiguratorSettings {
+    #[serde(
+        default = "default_configurator_window_title_pattern",
+        skip_serializing_if = "is_default_configurator_window_title_pattern"
+    )]
     pub window_title_pattern: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_window_hwnd: Option<isize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_window_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_window_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_config_name: Option<String>,
     #[serde(default)]
     pub rdp_mode: bool,
@@ -156,7 +172,7 @@ pub struct ConfiguratorSettings {
 impl Default for ConfiguratorSettings {
     fn default() -> Self {
         Self {
-            window_title_pattern: "Конфигуратор".to_string(),
+            window_title_pattern: default_configurator_window_title_pattern(),
             selected_window_hwnd: None,
             selected_window_pid: None,
             selected_window_title: None,
@@ -421,6 +437,20 @@ impl Default for CustomPromptsSettings {
     }
 }
 
+pub fn clear_runtime_only_settings(settings: &mut AppSettings) -> bool {
+    let had_binding = settings.configurator.selected_window_hwnd.is_some()
+        || settings.configurator.selected_window_pid.is_some()
+        || settings.configurator.selected_window_title.is_some()
+        || settings.configurator.selected_config_name.is_some();
+
+    settings.configurator.selected_window_hwnd = None;
+    settings.configurator.selected_window_pid = None;
+    settings.configurator.selected_window_title = None;
+    settings.configurator.selected_config_name = None;
+
+    had_binding
+}
+
 /// Get the settings directory path
 pub fn get_settings_dir() -> PathBuf {
     // Use data_local_dir instead of config_dir to avoid UNC paths on terminal servers
@@ -447,6 +477,13 @@ pub fn load_settings() -> AppSettings {
     };
 
     let mut modified = false;
+
+    if clear_runtime_only_settings(&mut settings) {
+        crate::app_log!(
+            "[SETTINGS] Removing transient configurator window binding from persisted settings"
+        );
+        modified = true;
+    }
 
     // Migration: debug_mcp -> debug_mode
     let path = get_settings_file();
@@ -583,7 +620,9 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let path = get_settings_file();
-    let content = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    let mut persisted_settings = settings.clone();
+    clear_runtime_only_settings(&mut persisted_settings);
+    let content = serde_json::to_string_pretty(&persisted_settings).map_err(|e| e.to_string())?;
 
     crate::logger::set_debug_mode(settings.debug_mode);
     fs::write(path, content).map_err(|e| e.to_string())
@@ -623,8 +662,8 @@ mod tests {
     }
 
     #[test]
-    fn configurator_binding_fields_roundtrip_via_json() {
-        let settings = AppSettings {
+    fn clear_runtime_only_settings_drops_configurator_binding() {
+        let mut settings = AppSettings {
             configurator: ConfiguratorSettings {
                 window_title_pattern: "Конфигуратор".to_string(),
                 selected_window_hwnd: Some(777),
@@ -639,19 +678,30 @@ mod tests {
             ..AppSettings::default()
         };
 
-        let serialized = serde_json::to_string(&settings).expect("settings should serialize");
-        let restored: AppSettings =
-            serde_json::from_str(&serialized).expect("settings should deserialize");
+        assert!(clear_runtime_only_settings(&mut settings));
+        assert_eq!(settings.configurator.selected_window_hwnd, None);
+        assert_eq!(settings.configurator.selected_window_pid, None);
+        assert_eq!(settings.configurator.selected_window_title, None);
+        assert_eq!(settings.configurator.selected_config_name, None);
+        assert_eq!(settings.configurator.window_title_pattern, "Конфигуратор");
+    }
 
-        assert_eq!(restored.configurator.selected_window_hwnd, Some(777));
-        assert_eq!(restored.configurator.selected_window_pid, Some(888));
-        assert_eq!(
-            restored.configurator.selected_window_title.as_deref(),
-            Some("Конфигуратор - DemoBase")
-        );
-        assert_eq!(
-            restored.configurator.selected_config_name.as_deref(),
-            Some("DemoBase")
-        );
+    #[test]
+    fn configurator_runtime_binding_is_not_serialized_when_cleared() {
+        let mut settings = AppSettings::default();
+        settings.configurator.selected_window_hwnd = Some(777);
+        settings.configurator.selected_window_pid = Some(888);
+        settings.configurator.selected_window_title = Some("Конфигуратор - DemoBase".to_string());
+        settings.configurator.selected_config_name = Some("DemoBase".to_string());
+
+        clear_runtime_only_settings(&mut settings);
+
+        let serialized = serde_json::to_string(&settings).expect("settings should serialize");
+
+        assert!(!serialized.contains("selected_window_hwnd"));
+        assert!(!serialized.contains("selected_window_pid"));
+        assert!(!serialized.contains("selected_window_title"));
+        assert!(!serialized.contains("selected_config_name"));
+        assert!(!serialized.contains("window_title_pattern"));
     }
 }
