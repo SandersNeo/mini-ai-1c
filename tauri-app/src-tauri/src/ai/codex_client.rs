@@ -13,11 +13,15 @@ use serde_json::Value;
 use tauri::Emitter;
 
 use super::models::{ApiMessage, Tool, ToolCall, ToolCallFunction};
-use crate::llm_profiles::get_active_profile;
+use crate::llm_profiles::{
+    get_active_profile, normalize_codex_reasoning_effort, DEFAULT_CODEX_REASONING_EFFORT,
+};
 
-const CODEX_BASE_URL: &str = "https://api.openai.com";
-const CODEX_RESPONSES_ENDPOINT: &str = "/v1/responses";
-const CODEX_USER_AGENT: &str = "codex_cli_rs/0.114.0 (Windows NT 10.0; x86_64) vscode/1.111.0";
+const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const CODEX_RESPONSES_ENDPOINT: &str = "/responses";
+const CODEX_USER_AGENT: &str = "codex-cli/0.1.0 (Windows NT 10.0; x86_64) vscode/1.111.0";
+const DEFAULT_CODEX_INSTRUCTIONS: &str =
+    "You are Codex, a coding assistant running inside Mini AI 1C.";
 /// Codex requires tool names ≤ 64 characters
 const MAX_TOOL_NAME_LEN: usize = 64;
 
@@ -26,6 +30,7 @@ const MAX_TOOL_NAME_LEN: usize = 64;
 #[derive(Serialize)]
 struct CodexRequest {
     model: String,
+    instructions: String,
     input: Vec<CodexInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<CodexTool>>,
@@ -58,7 +63,7 @@ struct CodexMessage {
 
 #[derive(Serialize)]
 struct CodexFunctionCall {
-    r#type: String,       // "function_call"
+    r#type: String, // "function_call"
     call_id: String,
     name: String,
     arguments: String,
@@ -66,7 +71,7 @@ struct CodexFunctionCall {
 
 #[derive(Serialize)]
 struct CodexFunctionCallOutput {
-    r#type: String,       // "function_call_output"
+    r#type: String, // "function_call_output"
     call_id: String,
     output: String,
 }
@@ -109,25 +114,25 @@ fn sanitize_tool_name(name: &str) -> String {
     }
 }
 
-/// Convert our `Vec<ApiMessage>` to Codex `input[]` array.
+/// Convert our `Vec<ApiMessage>` to Codex `instructions + input[]` payload.
 ///
 /// Mapping:
-/// - `role: "system"` → `role: "developer"` message
+/// - `role: "system"` / `role: "developer"` → top-level `instructions`
 /// - `role: "user"` → `role: "user"` message
 /// - `role: "assistant"` with content → `role: "assistant"` message
 /// - `role: "assistant"` with tool_calls → one `function_call` item per call
 /// - `role: "tool"` → `function_call_output` item
-fn messages_to_codex_input(messages: &[ApiMessage]) -> Vec<CodexInputItem> {
+fn messages_to_codex_payload(messages: &[ApiMessage]) -> (String, Vec<CodexInputItem>) {
+    let mut instructions_parts = Vec::new();
     let mut input = Vec::new();
 
     for msg in messages {
         match msg.role.as_str() {
-            "system" => {
+            "system" | "developer" => {
                 if let Some(content) = &msg.content {
-                    input.push(CodexInputItem::Message(CodexMessage {
-                        role: "developer".to_string(),
-                        content: Value::String(content.clone()),
-                    }));
+                    if !content.is_empty() {
+                        instructions_parts.push(content.clone());
+                    }
                 }
             }
 
@@ -166,11 +171,13 @@ fn messages_to_codex_input(messages: &[ApiMessage]) -> Vec<CodexInputItem> {
                 // Tool result
                 if let Some(call_id) = &msg.tool_call_id {
                     let output = msg.content.clone().unwrap_or_default();
-                    input.push(CodexInputItem::FunctionCallOutput(CodexFunctionCallOutput {
-                        r#type: "function_call_output".to_string(),
-                        call_id: call_id.clone(),
-                        output,
-                    }));
+                    input.push(CodexInputItem::FunctionCallOutput(
+                        CodexFunctionCallOutput {
+                            r#type: "function_call_output".to_string(),
+                            call_id: call_id.clone(),
+                            output,
+                        },
+                    ));
                 }
             }
 
@@ -178,7 +185,13 @@ fn messages_to_codex_input(messages: &[ApiMessage]) -> Vec<CodexInputItem> {
         }
     }
 
-    input
+    let instructions = if instructions_parts.is_empty() {
+        DEFAULT_CODEX_INSTRUCTIONS.to_string()
+    } else {
+        instructions_parts.join("\n\n")
+    };
+
+    (instructions, input)
 }
 
 /// Convert our Tool definitions to Codex format (same schema, just ensure name sanitization).
@@ -195,7 +208,11 @@ fn tools_to_codex(tools: &[Tool]) -> Vec<CodexTool> {
             // Ensure uniqueness with suffix, keeping within 64 chars
             let suffix = format!("_{}", count);
             let trimmed_len = MAX_TOOL_NAME_LEN.saturating_sub(suffix.len());
-            format!("{}{}", &base_name[..base_name.len().min(trimmed_len)], suffix)
+            format!(
+                "{}{}",
+                &base_name[..base_name.len().min(trimmed_len)],
+                suffix
+            )
         };
         *count += 1;
 
@@ -212,7 +229,7 @@ fn tools_to_codex(tools: &[Tool]) -> Vec<CodexTool> {
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
-fn build_headers(access_token: &str) -> Result<HeaderMap, String> {
+fn build_headers(access_token: &str, account_id: Option<&str>) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
@@ -220,15 +237,23 @@ fn build_headers(access_token: &str) -> Result<HeaderMap, String> {
         HeaderValue::from_str(&format!("Bearer {}", access_token))
             .map_err(|e| format!("Invalid auth token: {}", e))?,
     );
-    headers.insert(
-        "User-Agent",
-        HeaderValue::from_static(CODEX_USER_AGENT),
-    );
-    headers.insert(
-        "openai-beta",
-        HeaderValue::from_static("multi_agent"),
-    );
+    headers.insert("User-Agent", HeaderValue::from_static(CODEX_USER_AGENT));
+    headers.insert("Originator", HeaderValue::from_static("codex-cli"));
+    if let Some(aid) = account_id {
+        if let Ok(val) = HeaderValue::from_str(aid) {
+            headers.insert("ChatGPT-Account-Id", val);
+        }
+    }
     Ok(headers)
+}
+
+fn resolve_codex_reasoning_effort(profile: &crate::llm_profiles::LLMProfile) -> String {
+    normalize_codex_reasoning_effort(profile.reasoning_effort.as_deref())
+        .unwrap_or_else(|| DEFAULT_CODEX_REASONING_EFFORT.to_string())
+}
+
+fn safe_api_error_summary(status: reqwest::StatusCode, body: &str) -> String {
+    format!("status={} body_len={}", status.as_u16(), body.len())
 }
 
 // ─── Main streaming function ──────────────────────────────────────────────
@@ -241,8 +266,8 @@ pub async fn stream_codex_completion(
     let profile = get_active_profile().ok_or("No active LLM profile")?;
     let profile_id = profile.id.clone();
 
-    // Get & auto-refresh token
-    let (access_token, refresh_token, expires_at) =
+    // Get OAuth token & auto-refresh
+    let (access_token, refresh_token, expires_at, account_id) =
         crate::llm::cli_providers::codex::CodexCliProvider::get_token(&profile_id)?
             .ok_or("Codex CLI: требуется авторизация. Откройте настройки профиля и нажмите 'Войти через браузер'.")?;
 
@@ -251,13 +276,14 @@ pub async fn stream_codex_completion(
             crate::app_log!(force: true, "[Codex] Token expired, attempting refresh...");
             let _ = app_handle.emit("chat-status", "Обновляю токен Codex...");
             match crate::llm::cli_providers::codex::CodexCliProvider::refresh_access_token(
-                &profile_id, rt,
+                &profile_id,
+                rt,
             )
             .await
             {
                 Ok(()) => {
                     crate::llm::cli_providers::codex::CodexCliProvider::get_token(&profile_id)?
-                        .map(|(at, _, _)| at)
+                        .map(|(at, _, _, _)| at)
                         .unwrap_or(access_token)
                 }
                 Err(e) => {
@@ -282,28 +308,34 @@ pub async fn stream_codex_completion(
     };
 
     // Build model name
-    let model = if profile.model.is_empty() || profile.model == "codex-cli" {
-        "codex-mini-latest".to_string()
+    let model = if profile.model.trim().is_empty()
+        || matches!(
+            profile.model.as_str(),
+            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant"
+        ) {
+        "gpt-5.4".to_string()
     } else {
         profile.model.clone()
     };
+    let reasoning_effort = resolve_codex_reasoning_effort(&profile);
 
     // Build request
-    let input = messages_to_codex_input(&messages);
+    let (instructions, input) = messages_to_codex_payload(&messages);
     let request_body = CodexRequest {
         model,
+        instructions,
         input,
         tools: codex_tools,
         stream: true,
         reasoning: CodexReasoning {
-            effort: "medium".to_string(),
+            effort: reasoning_effort.clone(),
             summary: "auto".to_string(),
         },
         include: vec!["reasoning.encrypted_content".to_string()],
         store: false,
     };
 
-    let headers = build_headers(&access_token)?;
+    let headers = build_headers(&access_token, account_id.as_deref())?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -312,7 +344,14 @@ pub async fn stream_codex_completion(
 
     let url = format!("{}{}", CODEX_BASE_URL, CODEX_RESPONSES_ENDPOINT);
 
-    crate::app_log!(force: true, "[Codex] Sending request to {} (model={})", url, &request_body.model);
+    crate::app_log!(
+        force: true,
+        "[Codex] Sending request to {} (model={}, effort={}, has_account_id={})",
+        url,
+        &request_body.model,
+        reasoning_effort,
+        account_id.is_some()
+    );
     let _ = app_handle.emit("chat-status", "Отправляю запрос Codex...");
 
     let response = client
@@ -327,18 +366,26 @@ pub async fn stream_codex_completion(
 
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        crate::app_log!(force: true, "[Codex] API error {}: {}", status, body);
+        crate::app_log!(
+            force: true,
+            "[Codex] API error: {}",
+            safe_api_error_summary(status, &body)
+        );
 
         // Human-readable errors
         let message = match status.as_u16() {
-            401 => "Codex: токен недействителен. Переавторизуйтесь в настройках профиля.".to_string(),
+            401 => {
+                "Codex: токен недействителен. Переавторизуйтесь в настройках профиля.".to_string()
+            }
             429 => "Codex: превышен лимит запросов. Попробуйте позже.".to_string(),
             _ => {
                 // Try to parse OpenAI error format
                 serde_json::from_str::<Value>(&body)
                     .ok()
                     .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| format!("Codex API error {}: {}", status.as_u16(), body))
+                    .unwrap_or_else(|| {
+                        format!("Codex API error {} (подробности скрыты)", status.as_u16())
+                    })
             }
         };
         return Err(message);
@@ -359,16 +406,12 @@ pub async fn stream_codex_completion(
     let _ = app_handle.emit("chat-status", "Получаю ответ Codex...");
 
     'stream_loop: loop {
-        let chunk_result = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            stream.next(),
-        )
-        .await
-        {
-            Err(_) => return Err("Codex: таймаут потока (30 сек без данных)".to_string()),
-            Ok(None) => break 'stream_loop,
-            Ok(Some(r)) => r,
-        };
+        let chunk_result =
+            match tokio::time::timeout(std::time::Duration::from_secs(30), stream.next()).await {
+                Err(_) => return Err("Codex: таймаут потока (30 сек без данных)".to_string()),
+                Ok(None) => break 'stream_loop,
+                Ok(Some(r)) => r,
+            };
 
         let chunk = chunk_result.map_err(|e| format!("Codex stream error: {}", e))?;
         byte_buffer.extend_from_slice(&chunk);
@@ -435,8 +478,14 @@ pub async fn stream_codex_completion(
                         if item_type == "function_call" {
                             let call_id = item["call_id"].as_str().unwrap_or("").to_string();
                             let name = item["name"].as_str().unwrap_or("").to_string();
-                            crate::app_log!("[Codex] Function call started: {} (id={})", name, call_id);
-                            pending_calls.entry(call_id).or_insert((name, String::new()));
+                            crate::app_log!(
+                                "[Codex] Function call started: {} (id={})",
+                                name,
+                                call_id
+                            );
+                            pending_calls
+                                .entry(call_id)
+                                .or_insert((name, String::new()));
                         }
                     }
                 }
@@ -523,7 +572,11 @@ pub async fn stream_codex_completion(
                 "response.completed" => {
                     // Flush any remaining pending calls (shouldn't normally happen)
                     for (call_id, (name, args)) in pending_calls.drain() {
-                        let arguments = if args.is_empty() { "{}".to_string() } else { args };
+                        let arguments = if args.is_empty() {
+                            "{}".to_string()
+                        } else {
+                            args
+                        };
                         accumulated_tool_calls.push(ToolCall {
                             id: call_id,
                             r#type: "function".to_string(),
@@ -562,8 +615,16 @@ pub async fn stream_codex_completion(
 
     Ok(ApiMessage {
         role: "assistant".to_string(),
-        content: if full_content.is_empty() { None } else { Some(full_content) },
-        tool_calls: if accumulated_tool_calls.is_empty() { None } else { Some(accumulated_tool_calls) },
+        content: if full_content.is_empty() {
+            None
+        } else {
+            Some(full_content)
+        },
+        tool_calls: if accumulated_tool_calls.is_empty() {
+            None
+        } else {
+            Some(accumulated_tool_calls)
+        },
         tool_call_id: None,
         name: None,
     })

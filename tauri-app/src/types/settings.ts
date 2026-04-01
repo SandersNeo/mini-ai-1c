@@ -36,10 +36,21 @@ export interface CliUsage {
     resets_at?: string;
 }
 
+export interface CliUsageWindow {
+    key: string;
+    label: string;
+    used_percent: number;
+    remaining_percent: number;
+    window_minutes: number;
+    resets_at?: string;
+}
+
 export interface CliStatus {
     is_authenticated: boolean;
     auth_expires_at?: string;
     usage?: CliUsage;
+    usage_windows?: CliUsageWindow[];
+    usage_plan?: string;
 }
 
 // Пресеты поведения промптов

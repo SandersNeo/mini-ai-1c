@@ -17,6 +17,17 @@ function generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
+function createEmptySession(id: string = generateId()): ChatSession {
+    const now = Date.now();
+    return {
+        id,
+        title: 'Новый чат',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+    };
+}
+
 function getTitle(messages: ChatMessage[]): string {
     const first = messages.find(m => m.role === 'user');
     if (!first) return 'Новый чат';
@@ -50,20 +61,13 @@ export function useChatSessions() {
     const activeSession = sessions.find(s => s.id === activeId) ?? null;
 
     const createSession = useCallback((): string => {
-        const id = generateId();
-        const newSession: ChatSession = {
-            id,
-            title: 'Новый чат',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            messages: [],
-        };
+        const newSession = createEmptySession();
         setSessions(prev => {
             const updated = [newSession, ...prev];
             return updated.length > MAX_SESSIONS ? updated.slice(0, MAX_SESSIONS) : updated;
         });
-        setActiveId(id);
-        return id;
+        setActiveId(newSession.id);
+        return newSession.id;
     }, []);
 
     const switchSession = useCallback((id: string) => {
@@ -71,13 +75,19 @@ export function useChatSessions() {
     }, []);
 
     const deleteSession = useCallback((id: string) => {
-        setSessions(prev => prev.filter(s => s.id !== id));
-        setActiveId(prev => {
-            if (prev !== id) return prev;
-            const remaining = sessions.filter(s => s.id !== id);
-            return remaining[0]?.id ?? null;
-        });
-    }, [sessions]);
+        const remaining = sessions.filter(s => s.id !== id);
+        if (remaining.length === 0) {
+            const replacement = createEmptySession();
+            setSessions([replacement]);
+            setActiveId(replacement.id);
+            return;
+        }
+
+        setSessions(remaining);
+        if (activeId === id) {
+            setActiveId(remaining[0].id);
+        }
+    }, [activeId, sessions]);
 
     const updateSessionMessages = useCallback((id: string | null, messages: ChatMessage[]) => {
         if (!id) return;

@@ -7,7 +7,7 @@ import { CliAuthInitResponse } from '../../types/settings';
 interface CodexAuthModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onSuccess: (accessToken: string, refreshToken: string | null, expiresAt: number) => void;
+    onSuccess: (accessToken: string, refreshToken: string | null, expiresAt: number, resourceUrl: string | null) => void;
 }
 
 type Step = 'init' | 'waiting' | 'error';
@@ -54,8 +54,8 @@ export function CodexAuthModal({ isOpen, onClose, onSuccess }: CodexAuthModalPro
 
                 if (status.status === 'Authorized' && status.data) {
                     isPolling = false;
-                    const { access_token, refresh_token, expires_at } = status.data as any;
-                    await onSuccess(access_token, refresh_token ?? null, expires_at);
+                    const { access_token, refresh_token, expires_at, resource_url } = status.data as any;
+                    await onSuccess(access_token, refresh_token ?? null, expires_at, resource_url ?? null);
                     onClose();
                     return;
                 } else if (status.status === 'Error') {
@@ -67,7 +67,7 @@ export function CodexAuthModal({ isOpen, onClose, onSuccess }: CodexAuthModalPro
                 // Pending — continue polling
                 pollIntervalRef.current = setTimeout(poll, currentInterval);
             } catch (err) {
-                console.error('[Codex] Polling error:', err);
+                console.error('[Codex] Polling error');
                 pollIntervalRef.current = setTimeout(poll, currentInterval);
             }
         };
@@ -192,7 +192,7 @@ export function CodexAuthModal({ isOpen, onClose, onSuccess }: CodexAuthModalPro
                 {/* Footer */}
                 <div className="px-6 py-4 bg-[#09090b]/50 border-t border-[#27272a] flex justify-between items-center">
                     <p className="text-[10px] text-zinc-600">
-                        OAuth2 + PKCE · Токен хранится в Keychain
+                        OAuth2 + PKCE · Токен хранится локально в зашифрованном виде
                     </p>
                     <button
                         onClick={onClose}

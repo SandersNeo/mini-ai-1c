@@ -534,7 +534,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                 const { compressed, removedCount } = slidingWindowCompress(currentMessages, maxMsgs);
                 if (removedCount > 0) {
                     currentMessages = compressed;
-                    setMessages(currentMessages);
+                    setMessages([...currentMessages, userMessage]);
                 }
             } else if (strategy === 'summarize') {
                 const dialogMsgs = currentMessages.filter(m => m.role !== 'system');
@@ -556,7 +556,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                         };
                         const systemMsgs = currentMessages.filter(m => m.role === 'system' && m.variant !== 'info');
                         currentMessages = [...systemMsgs, summaryMsg];
-                        setMessages(currentMessages);
+                        setMessages([...currentMessages, userMessage]);
                     } catch (e) {
                         // Summarization failed — fall back silently, don't block the message
                         console.warn('[ChatContext] Summarization failed, continuing without compression:', e);

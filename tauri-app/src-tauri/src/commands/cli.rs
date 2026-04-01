@@ -16,7 +16,7 @@ pub async fn cli_auth_poll(
     device_code: String,
     code_verifier: Option<String>,
 ) -> Result<cli::CliAuthStatus, String> {
-    crate::app_log!(force: true, "[DEBUG] cli_auth_poll called for: {}, device_code: {}", provider, device_code);
+    crate::app_log!(force: true, "[DEBUG] cli_auth_poll called for: {}", provider);
     match provider.as_str() {
         "qwen" => QwenCliProvider::auth_poll(&device_code, code_verifier.as_deref()).await,
         "codex" => CodexCliProvider::auth_poll(&device_code, code_verifier.as_deref()).await,
@@ -84,7 +84,9 @@ pub async fn cli_refresh_usage(
     crate::app_log!(force: true, "[DEBUG] cli_refresh_usage called for profile: {}, provider: {}", profile_id, provider);
     match provider.as_str() {
         "qwen" => QwenCliProvider::fetch_usage_from_api(&profile_id).await,
-        "codex" => CodexCliProvider::fetch_usage_from_api(&profile_id).await,
+        "codex" => Err(
+            "Codex не использует legacy usage. Обновляйте квоты через cli_get_status.".to_string(),
+        ),
         _ => Err(format!("Unsupported provider for refresh: {}", provider)),
     }
 }

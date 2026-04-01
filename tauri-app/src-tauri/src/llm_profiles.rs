@@ -39,6 +39,16 @@ impl std::fmt::Display for LLMProvider {
     }
 }
 
+pub const DEFAULT_CODEX_REASONING_EFFORT: &str = "xhigh";
+
+pub fn normalize_codex_reasoning_effort(value: Option<&str>) -> Option<String> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "none" | "low" | "medium" | "high" | "xhigh" => Some(normalized),
+        _ => None,
+    }
+}
+
 /// LLM Profile
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMProfile {
@@ -51,6 +61,8 @@ pub struct LLMProfile {
     pub max_tokens: u32,
     pub temperature: f32,
     pub context_window_override: Option<u32>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub enable_thinking: Option<bool>,
     #[serde(default)]
@@ -78,6 +90,7 @@ impl LLMProfile {
             max_tokens: 4096,
             temperature: 0.7,
             context_window_override: None,
+            reasoning_effort: None,
             enable_thinking: None,
             disable_streaming: None,
             stream_timeout_secs: None,
@@ -134,7 +147,7 @@ impl LLMProfile {
                 LLMProvider::LMStudio => "http://localhost:1234/v1".to_string(),
                 LLMProvider::Custom => String::new(),
                 LLMProvider::QwenCli => "https://chat.qwen.ai/api/v1".to_string(),
-                LLMProvider::CodexCli => "https://api.openai.com".to_string(),
+                LLMProvider::CodexCli => "https://chatgpt.com/backend-api/codex".to_string(),
                 LLMProvider::OneCNaparnik => "https://code.1c.ai".to_string(),
             })
     }
@@ -166,6 +179,37 @@ pub fn load_profiles() -> ProfileStore {
                             crate::app_log!(force: true, "[LLM Profiles] Migrating QwenCli profile '{}' temperature from 0.7 to 0.1", profile.name);
                             profile.temperature = 0.1;
                             changed = true;
+                        }
+
+                        if matches!(profile.provider, LLMProvider::CodexCli) {
+                            let normalized_effort = normalize_codex_reasoning_effort(
+                                profile.reasoning_effort.as_deref(),
+                            )
+                            .unwrap_or_else(|| DEFAULT_CODEX_REASONING_EFFORT.to_string());
+                            if profile.reasoning_effort.as_deref()
+                                != Some(normalized_effort.as_str())
+                            {
+                                crate::app_log!(
+                                    force: true,
+                                    "[LLM Profiles] Migrating CodexCli profile '{}' reasoning_effort to '{}'",
+                                    profile.name,
+                                    normalized_effort
+                                );
+                                profile.reasoning_effort = Some(normalized_effort);
+                                changed = true;
+                            }
+
+                            let expected_base_url = "https://chatgpt.com/backend-api/codex";
+                            if profile.base_url.as_deref() != Some(expected_base_url) {
+                                crate::app_log!(
+                                    force: true,
+                                    "[LLM Profiles] Migrating CodexCli profile '{}' base_url to '{}'",
+                                    profile.name,
+                                    expected_base_url
+                                );
+                                profile.base_url = Some(expected_base_url.to_string());
+                                changed = true;
+                            }
                         }
                     }
 

@@ -38,10 +38,26 @@ pub struct CliUsage {
     pub resets_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliUsageWindow {
+    pub key: String,
+    pub label: String,
+    #[serde(alias = "used_percent", alias = "usedPercent")]
+    pub used_percent: f32,
+    #[serde(alias = "remaining_percent", alias = "remainingPercent")]
+    pub remaining_percent: f32,
+    #[serde(alias = "window_minutes", alias = "windowMinutes")]
+    pub window_minutes: u32,
+    #[serde(alias = "resets_at", alias = "resetsAt")]
+    pub resets_at: Option<String>,
+}
+
 // CliStatus for Rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliStatus {
     pub is_authenticated: bool,
     pub auth_expires_at: Option<String>,
     pub usage: Option<CliUsage>,
+    pub usage_windows: Option<Vec<CliUsageWindow>>,
+    pub usage_plan: Option<String>,
 }

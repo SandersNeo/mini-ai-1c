@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cliProvidersApi } from '../../api/cli_providers';
 import { QwenAuthModal } from './QwenAuthModal';
 import { CodexAuthModal } from './CodexAuthModal';
-import { CliStatus } from '../../types/settings';
+import { CliStatus, CliUsageWindow } from '../../types/settings';
 
 import { LLMProfile, ProfileStore } from '../../contexts/ProfileContext';
 
@@ -29,10 +29,45 @@ const PROVIDERS = [
     { value: 'Ollama', label: 'Ollama (Local)', defaultModel: 'llama3', defaultUrl: 'http://localhost:11434/v1', type: 'standard' },
     { value: 'LMStudio', label: 'LM Studio (Local)', defaultModel: '', defaultUrl: 'http://localhost:1234/v1', type: 'standard' },
     { value: 'QwenCli', label: 'Qwen Code (CLI)', defaultModel: 'coder-model', defaultUrl: 'https://portal.qwen.ai/v1', type: 'cli' },
-    { value: 'CodexCli', label: 'OpenAI Codex (CLI)', defaultModel: 'codex-mini-latest', defaultUrl: 'https://api.openai.com', type: 'cli' },
+    { value: 'CodexCli', label: 'OpenAI Codex (CLI)', defaultModel: 'gpt-5.4', defaultUrl: 'https://chatgpt.com/backend-api/codex', type: 'cli' },
     { value: 'Custom', label: 'Custom / Other', defaultModel: '', defaultUrl: '', type: 'standard' },
     { value: 'OneCNaparnik', label: '1С:Напарник', defaultModel: 'naparnik', defaultUrl: 'https://code.1c.ai', type: 'naparnik' },
 ];
+
+const CODEX_REASONING_EFFORTS = [
+    { value: 'none', label: 'None' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra High' },
+] as const;
+
+const sortModels = (models: any[]) => [...models].sort((a, b) => a.id.localeCompare(b.id));
+
+const formatProfileSummary = (profile: Pick<LLMProfile, 'provider' | 'model' | 'reasoning_effort'>) => {
+    const parts = [profile.provider, profile.model];
+    if (profile.provider === 'CodexCli') {
+        parts.push(profile.reasoning_effort || 'xhigh');
+    }
+    return parts.filter(Boolean).join(' • ');
+};
+
+const formatUsageWindowValue = (window: CliUsageWindow) => {
+    return `${Math.round(window.remaining_percent)}%`;
+};
+
+const formatUsageWindowTitle = (window: CliUsageWindow) => {
+    if (window.key === '5h') return 'Лимит на 5 часов';
+    if (window.key === 'weekly') return 'Недельный лимит';
+    return window.label;
+};
+
+const formatUsageReset = (value?: string) => {
+    if (!value) return 'Нет данных о времени сброса';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+};
 
 export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -78,18 +113,20 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                     setCliStatus(null);
                 }
 
-                // Auto-fetch models for CLI providers since the Fetch button is hidden
-                // NOTE: handleFetchModels() reads editForm which is stale here (async state update),
-                // so we invoke directly with the freshly found profile `p` to avoid race condition.
+                // CodexCli needs the profile-specific endpoint because generic provider fetch
+                // does not have access to the OAuth token for chatgpt.com/backend-api/codex.
                 if (PROVIDERS.find(prov => prov.value === p.provider)?.type === 'cli') {
                     setLoadingModels(true);
-                    invoke<any[]>('fetch_models_from_provider', {
-                        providerId: p.provider,
-                        baseUrl: p.base_url || PROVIDERS.find(prov => prov.value === p.provider)?.defaultUrl || '',
-                        apiKey: ''
-                    }).then(res => {
-                        const sorted = [...res].sort((a, b) => a.id.localeCompare(b.id));
-                        setModelList(sorted);
+                    const fetchPromise = p.provider === 'CodexCli'
+                        ? invoke<any[]>('fetch_models_for_profile', { profileId: p.id })
+                        : invoke<any[]>('fetch_models_from_provider', {
+                            providerId: p.provider,
+                            baseUrl: p.base_url || PROVIDERS.find(prov => prov.value === p.provider)?.defaultUrl || '',
+                            apiKey: ''
+                        });
+
+                    fetchPromise.then(res => {
+                        setModelList(sortModels(res));
                     }).catch(e => {
                         console.error('[LLMSettings] Failed to auto-fetch CLI models:', e);
                     }).finally(() => {
@@ -103,7 +140,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
     const fetchCliStatus = async (profileId: string, provider: string, force = false) => {
         setLoadingStatus(true);
         try {
-            if (force) {
+            if (force && provider !== 'codex') {
                 const usage = await cliProvidersApi.refreshUsage(profileId, provider);
                 setCliStatus(prev => prev ? { ...prev, usage } : null);
             } else {
@@ -135,7 +172,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                     apiKeyInputRef.current.value = '';
                 }
             }
-            onUpdate();
+            await onUpdate();
             setShowSaved(true);
             setTimeout(() => setShowSaved(false), 3000);
         } catch (e) {
@@ -148,7 +185,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
     const handleDelete = async (id: string) => {
         try {
             await invoke('delete_profile', { profileId: id });
-            onUpdate();
+            await onUpdate();
             if (editingId === id) {
                 setEditingId(null);
                 setEditForm(null);
@@ -162,7 +199,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
         }
     };
 
-    const handleCreate = (providerValue: string = 'OpenAI') => {
+    const handleCreate = async (providerValue: string = 'OpenAI') => {
         const id = `profile_${Date.now()}`;
         const provider = PROVIDERS.find(p => p.value === providerValue) || PROVIDERS[0];
 
@@ -174,12 +211,16 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
             api_key_encrypted: '',
             base_url: provider.defaultUrl,
             max_tokens: 4096,
-            temperature: (providerValue === 'QwenCli' || providerValue === 'CodexCli') ? 0.1 : 0.7
+            temperature: (providerValue === 'QwenCli' || providerValue === 'CodexCli') ? 0.1 : 0.7,
+            reasoning_effort: providerValue === 'CodexCli' ? 'xhigh' : undefined,
         };
-        invoke('save_profile', { profile: newProfile, apiKey: null }).then(() => {
-            onUpdate();
+        try {
+            await invoke('save_profile', { profile: newProfile, apiKey: null });
+            await onUpdate();
             setEditingId(id);
-        });
+        } catch (e) {
+            alert('Failed to create profile: ' + e);
+        }
     };
 
     const handleFetchModels = async () => {
@@ -187,7 +228,9 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
         setLoadingModels(true);
         try {
             let res: any[] = [];
-            if (newApiKey) {
+            if (editForm.provider === 'CodexCli') {
+                res = await invoke<any[]>('fetch_models_for_profile', { profileId: editForm.id });
+            } else if (newApiKey) {
                 res = await invoke<any[]>('fetch_models_from_provider', {
                     providerId: editForm.provider,
                     baseUrl: editForm.base_url || PROVIDERS.find(p => p.value === editForm.provider)?.defaultUrl || '',
@@ -204,7 +247,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                 });
             }
 
-            const sortedModels = [...res].sort((a, b) => a.id.localeCompare(b.id));
+            const sortedModels = sortModels(res);
             setModelList(sortedModels);
 
             // Sync metadata for the current model if it's already selected
@@ -226,7 +269,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
 
     const handleSetActive = async (id: string) => {
         await invoke('set_active_profile', { profileId: id });
-        onUpdate();
+        await onUpdate();
     };
 
     return (
@@ -254,7 +297,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                         <span className="font-medium text-xs sm:text-sm text-zinc-200 truncate pr-1">{p.name}</span>
                                         {profiles.active_profile_id === p.id && <Check className="w-3 h-3 text-green-500 flex-shrink-0" />}
                                     </div>
-                                    <div className="text-[10px] text-zinc-500 truncate">{p.provider} • {p.model}</div>
+                                    <div className="text-[10px] text-zinc-500 truncate">{formatProfileSummary(p)}</div>
                                 </div>
                             ))}
                         </div>
@@ -288,7 +331,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                         <span className="font-medium text-xs sm:text-sm text-zinc-200 truncate pr-1">{p.name}</span>
                                         {profiles.active_profile_id === p.id && <Check className="w-3 h-3 text-blue-400 flex-shrink-0" />}
                                     </div>
-                                    <div className="text-[10px] text-zinc-500 truncate">{p.provider} • {p.model}</div>
+                                    <div className="text-[10px] text-zinc-500 truncate">{formatProfileSummary(p)}</div>
                                 </div>
                             ))}
                         </div>
@@ -378,7 +421,10 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                             ...prev,
                                             provider: v,
                                             base_url: def?.defaultUrl || '',
-                                            model: def?.defaultModel || ''
+                                            model: def?.defaultModel || '',
+                                            reasoning_effort: v === 'CodexCli'
+                                                ? (prev.reasoning_effort || 'xhigh')
+                                                : undefined
                                         };
                                     });
                                 }}>
@@ -524,6 +570,56 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                                     Токен действителен до: {new Date(cliStatus.auth_expires_at).toLocaleString()}
                                                 </p>
                                             )}
+                                            {cliStatus.usage_windows && cliStatus.usage_windows.length > 0 && (
+                                                <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-lg space-y-3">
+                                                    <div className="flex flex-wrap justify-between items-center gap-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-xs text-zinc-300 font-medium">Оставшиеся лимиты Codex</span>
+                                                            <button
+                                                                onClick={() => fetchCliStatus(editForm.id, 'codex', true)}
+                                                                disabled={loadingStatus}
+                                                                className="p-1 hover:bg-zinc-800 rounded transition-colors"
+                                                                title="Обновить лимиты из live API Codex"
+                                                            >
+                                                                <RefreshCw className={`w-3 h-3 ${loadingStatus ? 'animate-spin' : ''} text-zinc-500`} />
+                                                            </button>
+                                                        </div>
+                                                        {cliStatus.usage_plan && (
+                                                            <span className="text-[10px] text-zinc-500 uppercase">Plan: {cliStatus.usage_plan}</span>
+                                                        )}
+                                                    </div>
+
+                                                    <div className="space-y-2">
+                                                        {cliStatus.usage_windows.map(window => (
+                                                            <div
+                                                                key={window.key}
+                                                                className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-3"
+                                                            >
+                                                                <div className="flex items-center justify-between gap-4">
+                                                                    <div>
+                                                                        <span className="text-[11px] font-semibold text-zinc-200">{formatUsageWindowTitle(window)}</span>
+                                                                        <p className="text-[10px] text-zinc-500 mt-1">
+                                                                            Сброс: {formatUsageReset(window.resets_at)}
+                                                                        </p>
+                                                                    </div>
+                                                                    <div className="min-w-[140px] flex items-center gap-3">
+                                                                        <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+                                                                            <div
+                                                                                className="h-full bg-emerald-400 rounded-full transition-all duration-500"
+                                                                                style={{ width: `${Math.max(0, Math.min(100, window.remaining_percent))}%` }}
+                                                                            />
+                                                                        </div>
+                                                                        <div className="text-right">
+                                                                            <div className="text-[10px] text-zinc-500">Остается</div>
+                                                                            <div className="text-sm font-semibold text-zinc-200">{formatUsageWindowValue(window)}</div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
                                             <button
                                                 onClick={async () => {
                                                     await cliProvidersApi.logout(editForm.id, 'codex');
@@ -543,8 +639,8 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                         </button>
                                     )}
                                     <p className="text-[10px] text-zinc-500 leading-relaxed px-1">
-                                        OpenAI Codex CLI использует OAuth2+PKCE через браузер.
-                                        Токен хранится в системном Keychain.
+                                        OpenAI Codex CLI — OAuth2+PKCE через браузер (ChatGPT Plus/Pro).
+                                        Токен хранится зашифрованным локально.
                                     </p>
                                 </div>
                             )}
@@ -608,7 +704,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                         {editForm.provider !== 'OneCNaparnik' && <div className="p-4 bg-zinc-950/50 rounded-lg border border-zinc-800 space-y-4">
                             <div className="flex justify-between items-end">
                                 <label className="text-xs text-zinc-500 uppercase font-bold px-1">Model ID</label>
-                                {PROVIDERS.find(p => p.value === editForm.provider)?.type !== 'cli' && (
+                                {(PROVIDERS.find(p => p.value === editForm.provider)?.type !== 'cli' || editForm.provider === 'CodexCli') && (
                                     <button
                                         onClick={handleFetchModels}
                                         disabled={loadingModels}
@@ -678,21 +774,48 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                         onChange={e => setEditForm({ ...editForm, max_tokens: parseInt(e.target.value) || 0 })}
                                     />
                                 </div>
-                                <div className="flex-1 min-w-[120px]">
-                                    <label className="text-xs text-zinc-500 uppercase font-bold px-1 whitespace-nowrap overflow-hidden text-ellipsis">
-                                        Temperature
-                                        {editForm.provider === 'QwenCli' && editForm.enable_thinking && (
-                                            <span className="ml-1 text-amber-600 normal-case font-normal">(Thinking → 1.0)</span>
-                                        )}
-                                    </label>
-                                    <input
-                                        type="number" step="0.1" min="0" max="2"
-                                        className="w-full mt-1 bg-zinc-900 border border-zinc-700 rounded-md px-3 h-9 text-sm text-zinc-200"
-                                        value={editForm.temperature}
-                                        onChange={e => setEditForm({ ...editForm, temperature: parseFloat(e.target.value) || 0.7 })}
-                                    />
-                                </div>
+                                {editForm.provider === 'CodexCli' ? (
+                                    <div className="flex-1 min-w-[120px]">
+                                        <label className="text-xs text-zinc-500 uppercase font-bold px-1">Reasoning effort</label>
+                                        <Select
+                                            value={editForm.reasoning_effort || 'xhigh'}
+                                            onValueChange={v => setEditForm({ ...editForm, reasoning_effort: v as LLMProfile['reasoning_effort'] })}
+                                        >
+                                            <SelectTrigger className="w-full mt-1 bg-zinc-900 border-zinc-700 h-9 px-3">
+                                                <SelectValue placeholder="Select effort" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {CODEX_REASONING_EFFORTS.map(option => (
+                                                    <SelectItem key={option.value} value={option.value}>
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                ) : (
+                                    <div className="flex-1 min-w-[120px]">
+                                        <label className="text-xs text-zinc-500 uppercase font-bold px-1 whitespace-nowrap overflow-hidden text-ellipsis">
+                                            Temperature
+                                            {editForm.provider === 'QwenCli' && editForm.enable_thinking && (
+                                                <span className="ml-1 text-amber-600 normal-case font-normal">(Thinking → 1.0)</span>
+                                            )}
+                                        </label>
+                                        <input
+                                            type="number" step="0.1" min="0" max="2"
+                                            className="w-full mt-1 bg-zinc-900 border border-zinc-700 rounded-md px-3 h-9 text-sm text-zinc-200"
+                                            value={editForm.temperature}
+                                            onChange={e => setEditForm({ ...editForm, temperature: parseFloat(e.target.value) || 0.7 })}
+                                        />
+                                    </div>
+                                )}
                             </div>
+
+                            {editForm.provider === 'CodexCli' && (
+                                <p className="text-[10px] text-zinc-600 px-1 pt-2">
+                                    Чем выше значение, тем глубже рассуждение и тем быстрее расходуются лимиты ChatGPT Plus/Pro.
+                                </p>
+                            )}
 
                             {/* Disable streaming toggle — Ollama/LMStudio */}
                             {(editForm.provider === 'Ollama' || editForm.provider === 'LMStudio') && (
@@ -812,13 +935,13 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
             <CodexAuthModal
                 isOpen={isCodexAuthModalOpen}
                 onClose={() => setIsCodexAuthModalOpen(false)}
-                onSuccess={async (access_token, refresh_token, expires_at) => {
+                onSuccess={async (access_token, refresh_token, expires_at, resource_url) => {
                     if (!editForm) return;
                     try {
-                        await cliProvidersApi.saveToken(editForm.id, 'codex', access_token, refresh_token, expires_at, null);
+                        await cliProvidersApi.saveToken(editForm.id, 'codex', access_token, refresh_token, expires_at, resource_url);
                         await fetchCliStatus(editForm.id, 'codex');
-                    } catch (err) {
-                        console.error('[Codex] Failed to save token:', err);
+                    } catch {
+                        console.error('[Codex] Failed to save token');
                     }
                 }}
             />
