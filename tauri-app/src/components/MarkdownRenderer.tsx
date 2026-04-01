@@ -4,6 +4,7 @@ import rehypeRaw from 'rehype-raw';
 import { PanelRight, ChevronDown, ChevronRight, BrainCircuit, Maximize2, Minimize2, X as CloseIcon, GitCompare } from 'lucide-react';
 import { BslEditor } from './ui/BslEditor';
 import { BslDiffEditor } from './ui/BslDiffEditor';
+import { normalizeBslIndent } from '../utils/diffViewer';
 import { useState, useMemo, memo } from 'react';
 
 interface MarkdownRendererProps {
@@ -210,7 +211,7 @@ const CodeBlock = memo(({ inline, className, children, isStreaming, onApplyCode,
                             </button>
                             {onApplyCode && (
                                 <button
-                                    onClick={() => onApplyCode(codeString)}
+                                    onClick={() => onApplyCode(normalizeBslIndent(codeString))}
                                     className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-all hover:bg-blue-400/10 rounded-md whitespace-nowrap"
                                     title="Load into Side Panel"
                                 >
@@ -254,7 +255,7 @@ const CodeBlock = memo(({ inline, className, children, isStreaming, onApplyCode,
                                 {onApplyCode && (
                                     <button
                                         onClick={() => {
-                                            onApplyCode(codeString);
+                                            onApplyCode(normalizeBslIndent(codeString));
                                             setIsFullscreen(false);
                                         }}
                                         className="flex items-center gap-2 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all text-xs font-semibold shadow-lg shadow-blue-900/20"

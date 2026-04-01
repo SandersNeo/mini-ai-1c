@@ -275,11 +275,29 @@ function tryDotDotDots(code: string, search: string, replace: string): string | 
     return result;
 }
 
+// ─── Нормализация отступов ─────────────────────────────────────────────────────
+
+/**
+ * Конвертирует ведущие пробелы в табуляцию (4 пробела → 1 таб).
+ * Используется для приведения кода, сгенерированного ИИ, к стандарту 1С конфигуратора.
+ */
+export function normalizeBslIndent(code: string): string {
+    return code.split('\n').map(line => {
+        // Если строка уже начинается с таба — не трогаем
+        if (!line.startsWith(' ')) return line;
+        const leadingSpaces = (line.match(/^ +/) ?? [''])[0].length;
+        const tabs = Math.floor(leadingSpaces / 4);
+        const rem = leadingSpaces % 4;
+        return '\t'.repeat(tabs) + ' '.repeat(rem) + line.slice(leadingSpaces);
+    }).join('\n');
+}
+
 // ─── Создание блока ────────────────────────────────────────────────────────────
 
 function createBlock(searchLines: string[], replaceLines: string[], index: number): DiffBlock {
     let search = searchLines.join('\n');
-    let replace = replaceLines.join('\n');
+    // Нормализуем отступы в replace-блоке: ИИ часто генерирует пробелы вместо табов
+    let replace = normalizeBslIndent(replaceLines.join('\n'));
 
     let lineStart: number | undefined;
     const lineMatch = search.match(/^:(строка|line):(\d+|EOF)\s*-+\s*\n/i);
