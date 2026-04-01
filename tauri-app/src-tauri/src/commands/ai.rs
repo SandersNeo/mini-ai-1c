@@ -746,7 +746,9 @@ pub async fn compact_context(messages_json: String) -> Result<String, String> {
     for msg in &history {
         let role = &msg.role;
         let content = msg.content.as_deref().unwrap_or("");
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
         conv_text.push_str(&format!("[{}]: {}\n\n", role, content));
     }
 
@@ -768,7 +770,8 @@ pub async fn compact_context(messages_json: String) -> Result<String, String> {
         ApiMessage {
             role: "user".to_string(),
             content: Some(format!(
-                "Сожми следующий диалог в краткий конспект:\n\n{}", conv_text
+                "Сожми следующий диалог в краткий конспект:\n\n{}",
+                conv_text
             )),
             tool_calls: None,
             tool_call_id: None,
@@ -791,7 +794,8 @@ pub async fn compact_context(messages_json: String) -> Result<String, String> {
         if matches!(
             profile.provider,
             crate::llm_profiles::LLMProvider::Ollama | crate::llm_profiles::LLMProvider::LMStudio
-        ) && !trimmed.ends_with("/v1") {
+        ) && !trimmed.ends_with("/v1")
+        {
             format!("{}/v1/chat/completions", trimmed)
         } else {
             format!("{}/chat/completions", trimmed)
