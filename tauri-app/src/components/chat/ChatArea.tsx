@@ -26,6 +26,9 @@ import { VoiceInputControl } from '../voice/VoiceInputControl';
 interface ChatAreaProps {
     originalCode?: string;
     modifiedCode?: string;
+    loadedContextCode?: string | null;
+    isContextSelection?: boolean;
+    onClearContext?: () => void;
     onApplyCode?: (code: string) => void;
     onCommitCode?: (code: string) => void;
     onCodeLoaded?: (code: string, isSelection: boolean) => void;
@@ -138,6 +141,9 @@ function DiffSummaryBanner({ content, onApply, onReject, disabled }: { content: 
 export function ChatArea({
     originalCode,
     modifiedCode,
+    loadedContextCode,
+    isContextSelection: isContextSelectionProp = false,
+    onClearContext,
     onApplyCode,
     onCommitCode,
     onCodeLoaded,
@@ -173,11 +179,11 @@ export function ChatArea({
     const [cliStatuses, setCliStatuses] = useState<Record<string, CliStatus>>({});
     const [showGetCodeDropdown, setShowGetCodeDropdown] = useState(false);
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
-    const [contextCode, setContextCode] = useState('');
-    const [isContextSelection, setIsContextSelection] = useState(false);
     const [configuratorTitleCtx, setConfiguratorTitleCtx] = useState<ConfiguratorTitleContext | null>(null);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [editText, setEditText] = useState('');
+    const contextCode = loadedContextCode;
+    const isContextSelection = isContextSelectionProp;
 
     // Slash Commands state
     const [showCommands, setShowCommands] = useState(false);
@@ -264,7 +270,7 @@ export function ChatArea({
 
         let expanded = foundCmd.template;
         let activeCode = options?.codeOverride ?? contextCode ?? modifiedCode ?? '';
-        if (expanded.includes('{code}') && !options?.codeOverride && !contextCode && selectedHwnd) {
+        if (expanded.includes('{code}') && !options?.codeOverride && !activeCode && selectedHwnd) {
             try {
                 const fetchedCode = await getCode(true);
                 if (fetchedCode && fetchedCode.trim().length > 0) {
@@ -349,8 +355,6 @@ export function ChatArea({
             }
 
             try {
-                setContextCode(explainCode);
-                setIsContextSelection(event.payload.scope === 'selection');
                 setConfiguratorTitleCtx(parsedTitleContext);
                 onActiveDiffChange?.('');
 
@@ -401,8 +405,6 @@ export function ChatArea({
             }
 
             try {
-                setContextCode(sessionCode);
-                setIsContextSelection(event.payload.scope === 'selection');
                 setConfiguratorTitleCtx(parsedTitleContext);
                 onActiveDiffChange?.('');
 
@@ -578,9 +580,17 @@ export function ChatArea({
             });
         }
         if (messages.length === 0) {
-            setContextCode('');
-            setIsContextSelection(false);
             setConfiguratorTitleCtx(null);
+            setAppliedDiffMessages(new Set());
+            setDismissedDiffMessages(new Set());
+            setDiffActions(new Map());
+            setEditingIndex(null);
+            setEditText('');
+            setInput('');
+            setShowCommands(false);
+            setCommandFilter('');
+            setShowGetCodeDropdown(false);
+            setExpandedThinking({});
         }
     }, [messages.length]);
 
@@ -649,9 +659,7 @@ export function ChatArea({
 
         sendMessage(textToSend, finalContext, diagStrings, displayContent, configuratorTitleCtx);
         setInput('');
-        // Clear context after sending
-        setContextCode('');
-        setIsContextSelection(false);
+        onClearContext?.();
     };
 
     const handleSelectCommand = (cmd: SlashCommand) => {
@@ -683,7 +691,6 @@ export function ChatArea({
     useEffect(() => {
         (window as any).__MINI_AI_TEST__ = {
             setBaselineCode: (code: string) => {
-                setContextCode(code);
                 if (onCodeLoaded) {
                     onCodeLoaded(code, true);
                 }
@@ -764,8 +771,6 @@ export function ChatArea({
             code = code.replace(/___1C_AI_MARKER_.*?___/g, '').trim();
         }
 
-        setContextCode(code);
-        setIsContextSelection(isSelection);
         // Захватываем контекст заголовка конфигуратора в момент загрузки кода
         setConfiguratorTitleCtx(parsedTitleContext);
         if (onCodeLoaded) {
@@ -778,8 +783,7 @@ export function ChatArea({
     };
 
     const handleRemoveCodeContext = () => {
-        setContextCode('');
-        setIsContextSelection(false);
+        onClearContext?.();
         setConfiguratorTitleCtx(null);
     };
 

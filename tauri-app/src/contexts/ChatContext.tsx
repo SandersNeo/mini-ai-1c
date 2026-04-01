@@ -525,9 +525,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     const clearChat = useCallback(() => {
+        if (flushRafId.current !== null) {
+            cancelAnimationFrame(flushRafId.current);
+            flushRafId.current = null;
+        }
+        chunkBuffer.current = '';
+        thinkingBuffer.current = '';
+        currentBatchToolIds.current = [];
+        messageQueueService.clear();
         setMessages([]);
         setChatStatus('');
         setIsLoading(false);
+        setCurrentIteration(0);
+        api.stopChat().catch(() => {/* non-critical */});
         // Reset Naparnik conversation session if provider is OneCNaparnik
         api.clearNaparnikSession().catch(() => {/* non-critical */});
     }, []);

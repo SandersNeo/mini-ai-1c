@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
-import { PanelRight, Trash2, Settings, Minus, Square, X } from 'lucide-react';
+import { Minus, Square, X } from 'lucide-react';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useBsl } from '../../contexts/BslContext';
 import { useChat } from '../../contexts/ChatContext';
@@ -15,6 +15,7 @@ import { Header } from './Header';
 import { ChatArea } from '../chat/ChatArea';
 import { OnboardingWizard } from '../Onboarding/OnboardingWizard';
 import type { OverlayQuickActionSessionPayload } from '../../types/quickActionSessions';
+import { useCodeSession } from '../../hooks/useCodeSession';
 import logo from '../../assets/logo.png';
 
 interface OverlayDiffPayload {
@@ -44,16 +45,32 @@ export function MainLayout() {
     const [settingsTab, setSettingsTab] = useState<'llm' | 'configurator' | 'bsl' | 'mcp' | 'debug' | undefined>(undefined);
     const [isApplying, setIsApplying] = useState(false);
     const [isValidating, setIsValidating] = useState(false);
-
-    const [lastConfiguratorCode, setLastConfiguratorCode] = useState(''); // Базовый код для проверки хэша (синхрон с 1С)
-    const [uiBaselineCode, setUiBaselineCode] = useState(''); // Базовый код для отображения диффа в UI
-    const [modifiedCode, setModifiedCode] = useState('');
     const [diagnostics, setDiagnostics] = useState<any[]>([]);
     const [showConflictDialog, setShowConflictDialog] = useState(false);
     const [selectionActive, setSelectionActive] = useState(true);
-    const [activeDiffContent, setActiveDiffContent] = useState(''); // Стейт для диффов
+    const [activeDiffContent, setActiveDiffContent] = useState('');
     const [activeQuickActionSession, setActiveQuickActionSession] = useState<OverlayQuickActionSessionPayload | null>(null);
-    const lastConfiguratorCodeRef = useRef(lastConfiguratorCode);
+    const {
+        state: codeSession,
+        stateRef: codeSessionRef,
+        actions: {
+            loadFromConfigurator,
+            applySucceeded,
+            syncBaseline,
+            userEdit,
+            applyAICode,
+            acceptDiff,
+            clearContext,
+            clearAll,
+        },
+    } = useCodeSession();
+    const {
+        configuratorCode: lastConfiguratorCode,
+        baselineCode: uiBaselineCode,
+        workingCode: modifiedCode,
+        loadedContextCode,
+        isContextSelection,
+    } = codeSession;
 
     // useMemo + try/catch защищает от ошибки "Cannot read properties of undefined (reading 'metadata')"
     // которая возникает если Tauri IPC не инициализирован (первый рендер / dev-режим браузера)
@@ -77,12 +94,12 @@ export function MainLayout() {
     useEffect(() => {
         const handleError = (event: ErrorEvent) => {
             if (event.message?.includes('metadata')) {
-                console.error("Критическая ошибка UI (metadata):", {
+                console.error('Критическая ошибка UI (metadata):', {
                     message: event.message,
                     error: event.error,
                     stack: event.error?.stack,
                     settings_exists: !!settings,
-                    bslStatus_exists: !!bslStatus
+                    bslStatus_exists: !!bslStatus,
                 });
             }
         };
@@ -93,30 +110,21 @@ export function MainLayout() {
     // Problem #4: Listen for external diff reset events
     useEffect(() => {
         const unlisten = listen<string>('RESET_DIFF', (event) => {
-            console.log("Diff Reset Event received", event.payload?.length);
-            setLastConfiguratorCode(event.payload || '');
-            setUiBaselineCode(event.payload || '');
-            setActiveDiffContent(''); // Сбрасываем диффы при новом коде
+            console.log('Diff Reset Event received', event.payload?.length);
+            syncBaseline(event.payload || '');
+            setActiveDiffContent('');
         });
         return () => {
             unlisten.then(fn => fn());
         };
-    }, []);
-
-
-    // Держим ref в актуальном состоянии для использования внутри listener-а без пересоздания
-    useEffect(() => {
-        lastConfiguratorCodeRef.current = lastConfiguratorCode;
-    }, [lastConfiguratorCode]);
+    }, [syncBaseline]);
 
     // Listen for overlay -> main window diff handoff.
     useEffect(() => {
         const unlisten = listen<OverlayDiffPayload>('open-diff-from-overlay', (event) => {
-            const baseCode = event.payload.originalCode ?? lastConfiguratorCodeRef.current ?? '';
+            const baseCode = event.payload.originalCode ?? codeSessionRef.current.configuratorCode ?? '';
             setActiveQuickActionSession(null);
-            setLastConfiguratorCode(baseCode);
-            setUiBaselineCode(baseCode);
-            setModifiedCode(baseCode);
+            loadFromConfigurator(baseCode, !event.payload.useSelectAll);
             setActiveDiffContent(event.payload.diffContent || '');
             setViewMode(prev => prev === 'assistant' ? 'split' : prev);
         });
@@ -124,8 +132,7 @@ export function MainLayout() {
         return () => {
             unlisten.then(fn => fn());
         };
-    }, []);
-
+    }, [codeSessionRef, loadFromConfigurator]);
 
     const ensureExpandedWindow = useCallback(async () => {
         if (!appWindow) return;
@@ -152,9 +159,7 @@ export function MainLayout() {
             });
 
             setActiveQuickActionSession(null);
-            setLastConfiguratorCode(explainCode);
-            setUiBaselineCode(explainCode);
-            setModifiedCode(explainCode);
+            loadFromConfigurator(explainCode, event.payload.scope === 'selection');
             setDiagnostics([]);
             setActiveDiffContent('');
             setViewMode('assistant');
@@ -163,7 +168,7 @@ export function MainLayout() {
         return () => {
             unlisten.then(fn => fn());
         };
-    }, [ensureExpandedWindow]);
+    }, [ensureExpandedWindow, loadFromConfigurator]);
 
     useEffect(() => {
         const unlisten = listen<OverlayQuickActionSessionPayload>('open-quick-action-session-from-overlay', (event) => {
@@ -179,9 +184,7 @@ export function MainLayout() {
             });
 
             setActiveQuickActionSession(event.payload);
-            setLastConfiguratorCode(baseCode);
-            setUiBaselineCode(baseCode);
-            setModifiedCode(baseCode);
+            loadFromConfigurator(baseCode, event.payload.scope === 'selection');
             setDiagnostics(event.payload.diagnostics ?? []);
             setActiveDiffContent('');
             setViewMode('split');
@@ -190,7 +193,7 @@ export function MainLayout() {
         return () => {
             unlisten.then(fn => fn());
         };
-    }, [ensureExpandedWindow]);
+    }, [ensureExpandedWindow, loadFromConfigurator]);
 
     // Analysis effect — runs only when modifiedCode changes AND we are not streaming
     useEffect(() => {
@@ -201,13 +204,13 @@ export function MainLayout() {
                 const results = await analyzeCode(modifiedCode);
                 setDiagnostics(results || []);
             } catch (e) {
-                console.error("Analysis failed:", e);
+                console.error('Analysis failed:', e);
             } finally {
                 setIsValidating(false);
             }
         };
 
-        const timer = setTimeout(runAnalysis, 2000); // 1. Увеличен debounce до 2000мс
+        const timer = setTimeout(runAnalysis, 2000);
         return () => clearTimeout(timer);
     }, [modifiedCode, analyzeCode, isLoading]);
 
@@ -269,11 +272,8 @@ export function MainLayout() {
                     }
                     : { forceLegacyApply: true },
             );
-            // При успешном применении - 1С теперь содержит modifiedCode
-            setLastConfiguratorCode(modifiedCode);
-            setUiBaselineCode(modifiedCode);
+            applySucceeded();
             setActiveQuickActionSession(null);
-            // Сброс больше не нужен здесь, так как pasteCode вызовет событие RESET_DIFF
         } catch (e: any) {
             const errorMsg = typeof e === 'string' ? e : e?.message || String(e);
             if (errorMsg.includes('CONFLICT')) {
@@ -281,19 +281,18 @@ export function MainLayout() {
                 setSelectionActive(isActive);
                 setShowConflictDialog(true);
             } else {
-                console.error("Apply failed", e);
-                alert("Ошибка применения: " + errorMsg);
+                console.error('Apply failed', e);
+                alert('Ошибка применения: ' + errorMsg);
             }
         } finally {
             setIsApplying(false);
         }
-    }, [activeQuickActionSession, modifiedCode, lastConfiguratorCode, pasteCode]);
+    }, [activeQuickActionSession, applySucceeded, checkSelection, lastConfiguratorCode, modifiedCode, pasteCode]);
 
     const handleConflictApplyToAll = useCallback(async () => {
         setShowConflictDialog(false);
         setIsApplying(true);
         try {
-            // useSelectAll = true, originalContent = undefined (bypass hash check)
             const writeSession = activeQuickActionSession?.mode === 'write' ? activeQuickActionSession : null;
             await pasteCode(
                 modifiedCode,
@@ -313,7 +312,7 @@ export function MainLayout() {
             );
             setActiveQuickActionSession(null);
         } catch (e: any) {
-            alert("Ошибка применения: " + (e?.message || String(e)));
+            alert('Ошибка применения: ' + (e?.message || String(e)));
         } finally {
             setIsApplying(false);
         }
@@ -323,7 +322,6 @@ export function MainLayout() {
         setShowConflictDialog(false);
         setIsApplying(true);
         try {
-            // useSelectAll = false, originalContent = undefined (bypass hash check)
             const writeSession = activeQuickActionSession?.mode === 'write' ? activeQuickActionSession : null;
             await pasteCode(
                 modifiedCode,
@@ -343,28 +341,37 @@ export function MainLayout() {
             );
             setActiveQuickActionSession(null);
         } catch (e: any) {
-            alert("Ошибка применения: " + (e?.message || String(e)));
+            alert('Ошибка применения: ' + (e?.message || String(e)));
         } finally {
             setIsApplying(false);
         }
     }, [activeQuickActionSession, modifiedCode, pasteCode]);
 
-    const handleCodeLoaded = useCallback((code: string, _isSelection: boolean) => {
+    const handleCodeLoaded = useCallback((code: string, isSelection: boolean) => {
         setActiveQuickActionSession(null);
-        setLastConfiguratorCode(code);
-        setUiBaselineCode(code);
-        setModifiedCode(code);
+        loadFromConfigurator(code, isSelection);
         setDiagnostics([]);
         setActiveDiffContent('');
         setViewMode(prev => prev === 'assistant' ? 'split' : prev);
-    }, []);
+    }, [loadFromConfigurator]);
 
     const handleCommitCode = useCallback((code: string) => {
-        // "Принять" - значит сделать код НОВЫМ визуальным бейзлайном
-        // Но НЕ обновлять lastConfiguratorCode, так как в 1С код еще старый
-        setUiBaselineCode(code);
-        setModifiedCode(code);
+        applyAICode(code);
+        acceptDiff();
         setActiveDiffContent('');
+    }, [acceptDiff, applyAICode]);
+
+    const handleChatApplyCode = useCallback((code: string) => {
+        applyAICode(code);
+        setActiveDiffContent('');
+        setViewMode(prev => prev === 'assistant' ? 'split' : prev);
+    }, [applyAICode]);
+
+    const handleActiveDiffChange = useCallback((content: string) => {
+        setActiveDiffContent(content);
+        if (content) {
+            setViewMode(prev => prev === 'assistant' ? 'split' : prev);
+        }
     }, []);
 
     const minimize = () => appWindow?.minimize();
@@ -378,7 +385,6 @@ export function MainLayout() {
         <div className="flex flex-col h-screen bg-transparent relative overflow-hidden">
             <SettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} initialTab={settingsTab as any} />
 
-            {/* Custom Title Bar */}
             <div className="relative h-10 bg-[#09090b] flex items-center justify-between px-4 border-b border-[#27272a] select-none z-50">
                 <div data-tauri-drag-region className="absolute inset-0 z-0" />
                 <div className="relative z-10 flex items-center gap-2 pointer-events-none">
@@ -405,9 +411,7 @@ export function MainLayout() {
                     onClearChat={() => {
                         clearChat();
                         setActiveQuickActionSession(null);
-                        setLastConfiguratorCode('');
-                        setUiBaselineCode('');
-                        setModifiedCode('');
+                        clearAll();
                         setDiagnostics([]);
                         setActiveDiffContent('');
                     }}
@@ -420,11 +424,10 @@ export function MainLayout() {
                         <ChatArea
                             originalCode={uiBaselineCode}
                             modifiedCode={modifiedCode}
-                            onApplyCode={useCallback((code: string) => {
-                                setModifiedCode(code);
-                                setActiveDiffContent(''); // Очищаем стейл-дифф при явном применении блока кода
-                                setViewMode(prev => prev === 'assistant' ? 'split' : prev);
-                            }, [])}
+                            loadedContextCode={loadedContextCode}
+                            isContextSelection={isContextSelection}
+                            onClearContext={clearContext}
+                            onApplyCode={handleChatApplyCode}
                             onCommitCode={handleCommitCode}
                             onCodeLoaded={handleCodeLoaded}
                             diagnostics={diagnostics}
@@ -432,12 +435,7 @@ export function MainLayout() {
                                 setSettingsTab(tab as any);
                                 setShowSettings(true);
                             }}
-                            onActiveDiffChange={useCallback((content: string) => {
-                                setActiveDiffContent(content);
-                                if (content) {
-                                    setViewMode(prev => prev === 'assistant' ? 'split' : prev); // Авто-открытие после завершения стриминга
-                                }
-                            }, [])}
+                            onActiveDiffChange={handleActiveDiffChange}
                             activeDiffContent={activeDiffContent}
                         />
                     </div>
@@ -449,7 +447,7 @@ export function MainLayout() {
                             onClose={() => setViewMode('assistant')}
                             originalCode={uiBaselineCode}
                             modifiedCode={modifiedCode}
-                            onModifiedCodeChange={setModifiedCode}
+                            onModifiedCodeChange={userEdit}
                             diagnostics={diagnostics}
                             onApply={handleApply}
                             isApplying={isApplying}
