@@ -202,64 +202,6 @@ export function DebugTab({
                         </div>
                     </div>
                 </section>
-
-                <section>
-                    <h3 className="mb-4 flex items-center gap-2 text-lg font-medium text-zinc-100">
-                        Сжатие контекста
-                    </h3>
-
-                    <div className="space-y-4 rounded-xl border border-zinc-700 bg-zinc-800/50 p-5">
-                        <p className="text-sm text-zinc-400">
-                            Что делать, когда история чата становится слишком длинной.
-                        </p>
-
-                        <div className="flex rounded-lg overflow-hidden border border-zinc-700 text-xs font-medium">
-                            {(['disabled', 'sliding_window', 'summarize'] as const).map((opt, i) => {
-                                const labels = { disabled: 'Выкл', sliding_window: 'Скользящее окно', summarize: 'Суммаризация' };
-                                const hints = {
-                                    disabled: 'Без сжатия',
-                                    sliding_window: 'Сохраняет первое сообщение + последние N, удаляет середину',
-                                    summarize: 'LLM создаёт конспект диалога (не работает с QwenCLI / Напарником)',
-                                };
-                                const active = (settings.context_compress_strategy || 'disabled') === opt;
-                                return (
-                                    <button
-                                        key={opt}
-                                        type="button"
-                                        title={hints[opt]}
-                                        onClick={() => setSettings({ ...settings, context_compress_strategy: opt })}
-                                        className={`flex-1 py-2 transition-colors ${i > 0 ? 'border-l border-zinc-700' : ''} ${active ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}
-                                    >
-                                        {labels[opt]}
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        {(settings.context_compress_strategy === 'sliding_window' || settings.context_compress_strategy === 'summarize') && (
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="text-sm font-medium text-zinc-200">Порог сжатия</div>
-                                    <div className="text-xs text-zinc-500">Сжимать когда диалог превышает N сообщений</div>
-                                </div>
-                                <input
-                                    type="number"
-                                    min={10}
-                                    max={200}
-                                    value={settings.max_context_messages ?? 40}
-                                    onChange={e => setSettings({ ...settings, max_context_messages: parseInt(e.target.value) || 40 })}
-                                    className="w-20 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 text-right focus:outline-none focus:border-zinc-500"
-                                />
-                            </div>
-                        )}
-
-                        {settings.context_compress_strategy === 'summarize' && (
-                            <p className="text-[11px] text-zinc-600">
-                                ⚠ Суммаризация недоступна для QwenCLI и 1С:Напарника — будет использован fallback без сжатия.
-                            </p>
-                        )}
-                    </div>
-                </section>
             </div>
         </div>
     );

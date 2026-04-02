@@ -261,8 +261,10 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
 
                 {/* Content */}
                 <div className="flex-1 overflow-hidden flex relative">
-                    {tab === 'general' && (
+                    {tab === 'general' && settings && (
                         <GeneralTab
+                            settings={settings}
+                            setSettings={(nextSettings) => setSettings(nextSettings)}
                             onConfigurationImported={async () => {
                                 await loadProfiles();
                                 await loadSettings();
@@ -368,7 +370,7 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
 
                 {/* Footer */}
                 <div className="p-4 border-t border-zinc-800 bg-zinc-900 flex justify-end gap-3 z-10 relative">
-                    {tab !== 'llm' && tab !== 'general' && settings && (
+                    {tab !== 'llm' && settings && (
                         <button
                             onClick={handleSaveSettings}
                             disabled={saving}
