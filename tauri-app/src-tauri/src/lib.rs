@@ -57,6 +57,7 @@ pub fn run() {
             stream_chat,
             stop_chat,
             interrupt_chat,
+            compact_context,
             approve_tool,
             reject_tool,
             undo_last_change,
@@ -112,6 +113,11 @@ pub fn run() {
             cli_logout,
             cli_get_status,
             cli_refresh_usage,
+            // Settings export/import
+            commands::settings::export_settings,
+            commands::settings::import_settings,
+            commands::settings::validate_import_settings_file,
+            commands::settings::import_settings_from_file,
             // 1С:Напарник
             clear_naparnik_session,
             // Scintilla diagnostics

@@ -1,4 +1,3 @@
-import React from 'react';
 import { Bug, FlaskConical, Save } from 'lucide-react';
 import { AppSettings } from '../../types/settings';
 import { setConfiguratorRdpMode } from '../../api/configurator';

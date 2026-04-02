@@ -374,6 +374,14 @@ export function MainLayout() {
         }
     }, []);
 
+    const handleNewChat = useCallback(() => {
+        clearChat();
+        setActiveQuickActionSession(null);
+        clearAll();
+        setDiagnostics([]);
+        setActiveDiffContent('');
+    }, [clearAll, clearChat]);
+
     const minimize = () => appWindow?.minimize();
     const maximize = async () => {
         const isMaximized = await appWindow?.isMaximized();
@@ -408,15 +416,8 @@ export function MainLayout() {
                     nodeAvailable={nodeAvailable}
                     viewMode={viewMode}
                     onViewModeChange={setViewMode}
-                    onClearChat={() => {
-                        clearChat();
-                        setActiveQuickActionSession(null);
-                        clearAll();
-                        setDiagnostics([]);
-                        setActiveDiffContent('');
-                    }}
+                    onNewChat={handleNewChat}
                     onOpenSettings={(tab) => { if (tab) setSettingsTab(tab as any); setShowSettings(true); }}
-                    onCodeLoaded={handleCodeLoaded}
                 />
 
                 <div className="flex flex-1 overflow-hidden bg-[#09090b] relative">

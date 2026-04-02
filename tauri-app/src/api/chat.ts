@@ -10,7 +10,7 @@ export interface ChatToolCall {
 }
 
 export interface ChatMessage {
-    role: 'user' | 'assistant' | 'tool';
+    role: 'user' | 'assistant' | 'tool' | 'system';
     content: string;
     tool_calls?: ChatToolCall[];
     tool_call_id?: string;
@@ -69,4 +69,8 @@ export async function rejectTool(): Promise<void> {
  */
 export async function clearNaparnikSession(): Promise<void> {
     return await invoke('clear_naparnik_session');
+}
+
+export async function compactContext(messagesJson: string): Promise<string> {
+    return await invoke<string>('compact_context', { messagesJson });
 }

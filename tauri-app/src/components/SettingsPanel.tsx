@@ -2,13 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { X, Save, Cpu, Monitor, FileCode, Database, Settings2, MessageSquare, Terminal, Sun, Moon, Check, RefreshCw } from 'lucide-react';
+import { X, Save, Cpu, Monitor, FileCode, Database, Settings2, MessageSquare, Terminal, Sun, Moon, Check, RefreshCw, SlidersHorizontal } from 'lucide-react';
 
 import { LLMSettings } from './settings/LLMSettings';
 import { MCPSettings } from './settings/MCPSettings';
 import { ConfiguratorTab } from './settings/ConfiguratorTab';
 import { BslTab } from './settings/BslTab';
 import { DebugTab } from './settings/DebugTab';
+import { GeneralTab } from './settings/GeneralTab';
 import { PromptsTab } from './settings/PromptsTab';
 import { SlashCommandsTab } from './settings/SlashCommandsTab';
 
@@ -19,11 +20,11 @@ import { WindowInfo, BslStatus, AppSettings, BslDiagnosticItem } from '../types/
 interface SettingsPanelProps {
     isOpen: boolean;
     onClose: () => void;
-    initialTab?: 'configurator' | 'llm' | 'bsl' | 'mcp' | 'debug' | 'prompts' | 'slash_commands';
+    initialTab?: 'general' | 'configurator' | 'llm' | 'bsl' | 'mcp' | 'debug' | 'prompts' | 'slash_commands';
 }
 
 export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProps) {
-    const [tab, setTab] = useState<'llm' | 'configurator' | 'bsl' | 'mcp' | 'debug' | 'prompts' | 'slash_commands'>('llm');
+    const [tab, setTab] = useState<'general' | 'llm' | 'configurator' | 'bsl' | 'mcp' | 'debug' | 'prompts' | 'slash_commands'>('llm');
 
     useEffect(() => {
         if (isOpen && initialTab) {
@@ -234,6 +235,7 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
                 {/* Tabs */}
                 <div className="flex border-b border-zinc-800 bg-zinc-900/50 overflow-x-auto scrollbar-thin">
                     {[
+                        { id: 'general' as const, label: 'Общие', icon: SlidersHorizontal },
                         { id: 'llm' as const, label: 'LLM', icon: Cpu },
                         { id: 'configurator' as const, label: 'Конфиг', icon: Monitor },
                         { id: 'bsl' as const, label: 'BSL', icon: FileCode },
@@ -259,6 +261,18 @@ export function SettingsPanel({ isOpen, onClose, initialTab }: SettingsPanelProp
 
                 {/* Content */}
                 <div className="flex-1 overflow-hidden flex relative">
+                    {tab === 'general' && settings && (
+                        <GeneralTab
+                            settings={settings}
+                            setSettings={(nextSettings) => setSettings(nextSettings)}
+                            onConfigurationImported={async () => {
+                                await loadProfiles();
+                                await loadSettings();
+                                refreshAll();
+                            }}
+                        />
+                    )}
+
                     {tab === 'llm' && (
                         <div className="w-full h-full">
                             <LLMSettings

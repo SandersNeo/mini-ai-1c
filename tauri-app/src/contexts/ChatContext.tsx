@@ -3,6 +3,10 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from '../api';
 import { ConfiguratorTitleContext, formatConfiguratorContextForLLM } from '../utils/configurator';
 import { messageQueueService, QueuedMessage } from '../services/MessageQueueService';
+import { useSettings } from './SettingsContext';
+import { useChatSessions, ChatSession } from '../hooks/useChatSessions';
+
+export type { ChatSession };
 
 export interface ToolCall {
     id: string;
@@ -29,29 +33,113 @@ export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'tool' | 'system';
     content: string;
+    payloadContent?: string;
     displayContent?: string;
     thinking?: string;
     toolCalls?: ToolCall[];
     parts?: MessagePart[];
     diagnostics?: BSLDiagnostic[];
     timestamp: number;
-    variant?: 'warning' | 'info';
+    variant?: 'warning' | 'info' | 'compression';
+    includeInPayload?: boolean;
+}
+
+export interface CompressionIndicator {
+    anchorMessageId: string;
+    label: string;
 }
 
 // Helper to generate unique IDs
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
+function isCompressionMessage(msg: ChatMessage): boolean {
+    return msg.role === 'system' && (
+        msg.variant === 'compression' ||
+        (msg.variant === 'info' && msg.content.startsWith('📋 Конспект предыдущего диалога:'))
+    );
+}
+
+function stripCompressionMessages(msgs: ChatMessage[]): ChatMessage[] {
+    return msgs.filter(msg => !isCompressionMessage(msg));
+}
+
+/** Sliding window for payload: keep first message + last (maxMessages - 1), without UI markers */
+function slidingWindowCompress(
+    msgs: ChatMessage[],
+    maxMessages: number
+): { compressed: ChatMessage[]; removedCount: number } {
+    const systemMsgs = msgs.filter(m => m.role === 'system');
+    const dialogMsgs = msgs.filter(m => m.role !== 'system');
+    if (dialogMsgs.length <= maxMessages) {
+        return { compressed: msgs, removedCount: 0 };
+    }
+    // Keep first message + last (maxMessages - 1) messages
+    const first = dialogMsgs[0];
+    const tail = dialogMsgs.slice(-(maxMessages - 1));
+    const removedCount = dialogMsgs.length - maxMessages;
+    return { compressed: [...systemMsgs, first, ...tail], removedCount };
+}
+
+function buildPayloadMessages(
+    msgs: ChatMessage[],
+    currentUserMessageId: string,
+    contextPayload: string
+): api.ChatMessage[] {
+    return msgs
+        .filter(m => m.role !== 'system' || m.includeInPayload)
+        .flatMap(m => {
+            const content = m.id === currentUserMessageId
+                ? contextPayload
+                : (m.payloadContent ?? m.content ?? '');
+
+            if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+                const msg: api.ChatMessage = {
+                    role: 'assistant',
+                    content,
+                    tool_calls: m.toolCalls.map(tc => ({
+                        id: tc.id,
+                        type: 'function',
+                        function: {
+                            name: tc.name,
+                            arguments: tc.arguments || '{}'
+                        }
+                    }))
+                };
+                const toolResults: api.ChatMessage[] = m.toolCalls
+                    .filter(tc => tc.result !== undefined && tc.id)
+                    .map(tc => ({
+                        role: 'tool' as const,
+                        content: tc.result || '',
+                        tool_call_id: tc.id,
+                        name: tc.name
+                    }));
+                return [msg, ...toolResults];
+            }
+
+            return [{
+                role: m.role as api.ChatMessage['role'],
+                content,
+            }];
+        });
+}
+
 interface ChatContextType {
     messages: ChatMessage[];
+    compressionIndicator: CompressionIndicator | null;
     isLoading: boolean;
     chatStatus: string;
     currentIteration: number;
     messageQueue: QueuedMessage[];
+    sessions: ChatSession[];
+    activeSessionId: string | null;
+    createNewChat: () => void;
+    switchChat: (id: string) => void;
+    deleteChat: (id: string) => void;
     sendMessage: (content: string, codeContext?: string, diagnostics?: string[], displayContent?: string, configuratorCtx?: ConfiguratorTitleContext | null) => Promise<void>;
     stopChat: () => Promise<void>;
     clearChat: () => void;
     editAndRerun: (messageIndex: number, newContent: string, codeContext?: string, diagnostics?: string[], displayContent?: string, configuratorCtx?: ConfiguratorTitleContext | null) => Promise<void>;
-    addSystemMessage: (content: string, variant?: 'warning' | 'info') => void;
+    addSystemMessage: (content: string, variant?: 'warning' | 'info' | 'compression') => void;
     removeSystemMessage: (content: string) => void;
     injectMessage: (message: Omit<ChatMessage, 'id'>) => void;
     removeQueuedMessage: (id: string) => void;
@@ -62,7 +150,22 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const { settings } = useSettings();
+    const {
+        sessions,
+        activeId: activeSessionId,
+        activeSession,
+        createSession,
+        switchSession,
+        startDraft,
+        deleteSession,
+        updateSessionMessages,
+    } = useChatSessions();
+
+    const [messages, setMessages] = useState<ChatMessage[]>(() => {
+        return stripCompressionMessages(activeSession?.messages ?? []);
+    });
+    const [compressionIndicator, setCompressionIndicator] = useState<CompressionIndicator | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [chatStatus, setChatStatus] = useState('');
     const [currentIteration, setCurrentIteration] = useState(0);
@@ -73,6 +176,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const chunkBuffer = useRef('');
     const thinkingBuffer = useRef('');
     const flushRafId = useRef<number | null>(null);
+    const didInitializeSessionRef = useRef(false);
 
     const flushChunkBuffer = useCallback(() => {
         flushRafId.current = null;
@@ -144,6 +248,64 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
         flushChunkBuffer();
     }, [flushChunkBuffer]);
+
+    // В dev + StrictMode mount может происходить дважды.
+    // Если есть сохранённые сессии, но активная не восстановлена, выбираем первую.
+    // Если истории нет, остаёмся в draft-режиме без пустой storage-сессии.
+    useEffect(() => {
+        if (didInitializeSessionRef.current) {
+            return;
+        }
+        didInitializeSessionRef.current = true;
+
+        if (activeSessionId && activeSession) {
+            return;
+        }
+
+        if (sessions.length > 0) {
+            switchSession(sessions[0].id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // При смене активной сессии — загружаем её сообщения
+    const prevActiveIdRef = useRef(activeSessionId);
+    useEffect(() => {
+        if (prevActiveIdRef.current !== activeSessionId) {
+            prevActiveIdRef.current = activeSessionId;
+            setMessages(stripCompressionMessages(activeSession?.messages ?? []));
+            setCompressionIndicator(null);
+        }
+    }, [activeSessionId, activeSession]);
+
+    // Сохраняем сообщения в активную сессию при каждом изменении
+    const messagesRef = useRef(messages);
+    useEffect(() => {
+        messagesRef.current = messages;
+        updateSessionMessages(activeSessionId, messages);
+    }, [messages, activeSessionId, updateSessionMessages]);
+
+    // Создать новый чат
+    const createNewChat = useCallback(() => {
+        setMessages([]);
+        setCompressionIndicator(null);
+        startDraft();
+        setChatStatus('');
+        setIsLoading(false);
+        api.clearNaparnikSession().catch(() => {/* non-critical */});
+    }, [startDraft]);
+
+    // Переключить чат
+    const switchChat = useCallback((id: string) => {
+        if (id === activeSessionId) return;
+        switchSession(id);
+        // messages set via useEffect above
+    }, [activeSessionId, switchSession]);
+
+    // Удалить чат
+    const deleteChat = useCallback((id: string) => {
+        deleteSession(id);
+    }, [deleteSession]);
 
     // Подписка на изменения очереди
     useEffect(() => {
@@ -372,6 +534,71 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         };
     }, []);
 
+    const buildCompressedPayload = useCallback(async (
+        historyMessages: ChatMessage[],
+        userMessage: ChatMessage,
+        contextPayload: string,
+    ): Promise<{
+        payloadMessages: api.ChatMessage[];
+        indicator: CompressionIndicator | null;
+    }> => {
+        let payloadSourceMessages = historyMessages;
+        let indicator: CompressionIndicator | null = null;
+
+        const strategy = settings?.context_compress_strategy;
+        const maxMsgs = settings?.max_context_messages ?? 40;
+
+        if (strategy === 'sliding_window') {
+            const { compressed } = slidingWindowCompress(historyMessages, maxMsgs);
+            payloadSourceMessages = compressed;
+        } else if (strategy === 'summarize') {
+            const previousMessages = historyMessages.slice(0, -1);
+            const dialogMsgs = previousMessages.filter(m => m.role !== 'system');
+
+            if (dialogMsgs.length > maxMsgs) {
+                try {
+                    const toSummarize: api.ChatMessage[] = dialogMsgs.map(m => ({
+                        role: m.role as api.ChatMessage['role'],
+                        content: m.content || '',
+                    }));
+
+                    const summary = (await api.compactContext(JSON.stringify(toSummarize))).trim();
+                    if (!summary) {
+                        throw new Error('Empty summary returned from compact_context');
+                    }
+
+                    const summaryMsg: ChatMessage = {
+                        id: generateId(),
+                        role: 'system',
+                        content: 'Контекст сжат',
+                        payloadContent: summary,
+                        parts: [{ type: 'text', content: 'Контекст сжат' }],
+                        timestamp: Date.now(),
+                        variant: 'compression',
+                        includeInPayload: true,
+                    };
+
+                    const payloadSystemMessages = previousMessages.filter(
+                        msg => msg.role === 'system' && msg.includeInPayload
+                    );
+
+                    payloadSourceMessages = [...payloadSystemMessages, summaryMsg, userMessage];
+                    indicator = {
+                        anchorMessageId: userMessage.id,
+                        label: 'Контекст сжат',
+                    };
+                } catch (error) {
+                    console.warn('[ChatContext] Summarization failed, continuing without compression:', error);
+                }
+            }
+        }
+
+        return {
+            payloadMessages: buildPayloadMessages(payloadSourceMessages, userMessage.id, contextPayload),
+            indicator,
+        };
+    }, [settings]);
+
     const sendMessage = useCallback(async (content: string, codeContext?: string, diagnostics?: string[], displayContent?: string, configuratorCtx?: ConfiguratorTitleContext | null) => {
         if (!content.trim()) return;
 
@@ -408,7 +635,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             parts: [{ type: 'text', content: displayContent || content }],
             timestamp: Date.now()
         };
-        setMessages(prev => [...prev, userMessage]);
+        const baseMessages = stripCompressionMessages(messages);
+        const nextMessages = [...baseMessages, userMessage];
+        if (!activeSessionId) {
+            createSession(nextMessages);
+        }
+        setMessages(nextMessages);
+        setCompressionIndicator(null);
         currentBatchToolIds.current = [];
         setIsLoading(true);
 
@@ -433,40 +666,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
-            // Construct message history (system messages are UI-only, not sent to backend)
-            // IMPORTANT: tool_calls + tool results must be preserved for multi-turn tool use.
-            // Assistant messages with tool_calls are expanded to include synthetic tool result
-            // messages so the LLM gets a valid conversation history.
-            const payloadMessages: api.ChatMessage[] = messages
-                .filter(m => m.role !== 'system')
-                .flatMap(m => {
-                    const msg: api.ChatMessage = {
-                        role: m.role as 'user' | 'assistant' | 'tool',
-                        content: m.content || ''
-                    };
-                    if (m.toolCalls && m.toolCalls.length > 0 && m.role === 'assistant') {
-                        msg.tool_calls = m.toolCalls.map(tc => ({
-                            id: tc.id,
-                            type: 'function',
-                            function: {
-                                name: tc.name,
-                                arguments: tc.arguments || '{}'
-                            }
-                        }));
-                        // Inject tool result messages so the API history is valid
-                        const toolResults: api.ChatMessage[] = m.toolCalls
-                            .filter(tc => tc.result !== undefined && tc.id)
-                            .map(tc => ({
-                                role: 'tool' as const,
-                                content: tc.result || '',
-                                tool_call_id: tc.id,
-                                name: tc.name
-                            }));
-                        return [msg, ...toolResults];
-                    }
-                    return [msg];
-                });
-            payloadMessages.push({ role: 'user', content: contextPayload });
+            const { payloadMessages, indicator } = await buildCompressedPayload(nextMessages, userMessage, contextPayload);
+            setCompressionIndicator(indicator);
 
             await api.streamChat(payloadMessages);
         } catch (err) {
@@ -499,7 +700,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             });
             setIsLoading(false);
         }
-    }, [isLoading, messages]);
+    }, [activeSessionId, buildCompressedPayload, createSession, isLoading, messages]);
 
     // Дренирование очереди: срабатывает когда isLoading переходит false
     // useEffect гарантирует что sendMessage уже видит isLoading=false
@@ -534,15 +735,17 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         currentBatchToolIds.current = [];
         messageQueueService.clear();
         setMessages([]);
+        setCompressionIndicator(null);
         setChatStatus('');
         setIsLoading(false);
         setCurrentIteration(0);
         api.stopChat().catch(() => {/* non-critical */});
+        startDraft();
         // Reset Naparnik conversation session if provider is OneCNaparnik
         api.clearNaparnikSession().catch(() => {/* non-critical */});
-    }, []);
+    }, [startDraft]);
 
-    const addSystemMessage = useCallback((content: string, variant?: 'warning' | 'info') => {
+    const addSystemMessage = useCallback((content: string, variant?: 'warning' | 'info' | 'compression') => {
         setMessages(prev => [
             ...prev,
             { id: generateId(), role: 'system', content, parts: [{ type: 'text', content }], timestamp: Date.now(), variant: variant ?? 'warning' }
@@ -561,12 +764,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const editAndRerun = useCallback(async (messageIndex: number, newContent: string, codeContext?: string, diagnostics?: string[], displayContent?: string, configuratorCtx?: ConfiguratorTitleContext | null) => {
         if (!newContent.trim() || isLoading) return;
 
+        const cleanMessages = stripCompressionMessages(messages);
+
         // 1. Truncate messages to the edited message
-        const truncatedMessages = messages.slice(0, messageIndex);
+        const truncatedMessages = cleanMessages.slice(0, messageIndex);
 
         // 2. Update the edited message with new content
         const editedMessage: ChatMessage = {
-            ...messages[messageIndex],
+            ...cleanMessages[messageIndex],
             content: newContent,
             displayContent,
             parts: [{ type: 'text', content: displayContent || newContent }],
@@ -574,7 +779,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         };
 
         // 3. Set messages to truncated + edited
-        setMessages([...truncatedMessages, editedMessage]);
+        const nextMessages = [...truncatedMessages, editedMessage];
+        setMessages(nextMessages);
+        setCompressionIndicator(null);
         currentBatchToolIds.current = [];
         setIsLoading(true);
 
@@ -594,36 +801,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
-            // Construct message history from truncated + edited (filter system/UI messages)
-            const payloadMessages: api.ChatMessage[] = [...truncatedMessages, editedMessage]
-                .filter(m => m.role !== 'system')
-                .flatMap(m => {
-                    const msg: api.ChatMessage = {
-                        role: m.role as 'user' | 'assistant' | 'tool',
-                        content: m.content || ''
-                    };
-                    if (m.toolCalls && m.toolCalls.length > 0 && m.role === 'assistant') {
-                        msg.tool_calls = m.toolCalls.map(tc => ({
-                            id: tc.id,
-                            type: 'function',
-                            function: {
-                                name: tc.name,
-                                arguments: tc.arguments || '{}'
-                            }
-                        }));
-                        const toolResults: api.ChatMessage[] = m.toolCalls
-                            .filter(tc => tc.result !== undefined && tc.id)
-                            .map(tc => ({
-                                role: 'tool' as const,
-                                content: tc.result || '',
-                                tool_call_id: tc.id,
-                                name: tc.name
-                            }));
-                        return [msg, ...toolResults];
-                    }
-                    return [msg];
-                });
-            payloadMessages.push({ role: 'user', content: contextPayload });
+            const { payloadMessages, indicator } = await buildCompressedPayload(nextMessages, editedMessage, contextPayload);
+            setCompressionIndicator(indicator);
 
             await api.streamChat(payloadMessages);
         } catch (err) {
@@ -655,7 +834,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             });
             setIsLoading(false);
         }
-    }, [isLoading, messages]);
+    }, [buildCompressedPayload, isLoading, messages]);
 
     const removeQueuedMessage = useCallback((id: string) => {
         messageQueueService.remove(id);
@@ -672,10 +851,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     return (
         <ChatContext.Provider value={{
             messages,
+            compressionIndicator,
             isLoading,
             chatStatus,
             currentIteration,
             messageQueue,
+            sessions,
+            activeSessionId,
+            createNewChat,
+            switchChat,
+            deleteChat,
             sendMessage,
             stopChat,
             clearChat,

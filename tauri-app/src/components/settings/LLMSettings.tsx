@@ -693,6 +693,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                     </button>
                                 </div>
                             )}
+
                         </div>}
 
                         {/* Save Button */}
