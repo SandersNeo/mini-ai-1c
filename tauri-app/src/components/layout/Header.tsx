@@ -1,10 +1,11 @@
-import { Settings, PanelRight, Trash2, Maximize2, Minimize2, Pin, MessageSquare, Columns, Code2, AlertTriangle, Bell, X, Info, Sun, Moon, Sparkles } from 'lucide-react';
+import { Settings, Maximize2, Minimize2, Pin, MessageSquare, Columns, Code2, AlertTriangle, Bell, X, Info, Sun, Moon, Sparkles, History } from 'lucide-react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { useConfigurator } from '../../contexts/ConfiguratorContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useProfiles } from '../../contexts/ProfileContext';
 import { useChat } from '../../contexts/ChatContext';
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { ChatSessionsPopover } from '../chat/ChatSessionsPopover';
 
 const PRESET_MCP_NOTIFICATIONS = [
     {
@@ -34,9 +35,8 @@ interface HeaderProps {
     nodeAvailable: boolean | null;
     viewMode: 'assistant' | 'split' | 'code';
     onViewModeChange: (mode: 'assistant' | 'split' | 'code') => void;
-    onClearChat: () => void;
+    onNewChat: () => void;
     onOpenSettings: (tab?: string) => void;
-    onCodeLoaded: (code: string, isSelection: boolean) => void;
 }
 
 export function Header({
@@ -44,19 +44,27 @@ export function Header({
     nodeAvailable,
     viewMode,
     onViewModeChange,
-    onClearChat,
+    onNewChat,
     onOpenSettings,
-    onCodeLoaded,
 }: HeaderProps) {
     const [isCompact, setIsCompact] = useState(false);
     const { snapToConfigurator } = useConfigurator();
     const { settings, updateSettings } = useSettings();
     const { activeProfile } = useProfiles();
-    const { isLoading, chatStatus } = useChat();
+    const {
+        isLoading,
+        chatStatus,
+        sessions,
+        activeSessionId,
+        switchChat,
+        deleteChat,
+    } = useChat();
     const sliderRef = useRef<HTMLDivElement>(null);
     const isDragging = useRef(false);
     const [notifOpen, setNotifOpen] = useState(false);
     const notifRef = useRef<HTMLDivElement>(null);
+    const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+    const chatHistoryRef = useRef<HTMLDivElement>(null);
     const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
 
     useEffect(() => {
@@ -75,6 +83,10 @@ export function Header({
         const handler = (e: MouseEvent) => {
             if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
                 setNotifOpen(false);
+            }
+
+            if (chatHistoryRef.current && !chatHistoryRef.current.contains(e.target as Node)) {
+                setChatHistoryOpen(false);
             }
         };
         document.addEventListener('mousedown', handler);
@@ -318,13 +330,30 @@ export function Header({
                     {isCompact ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
                 </button>
                 <div className="w-px h-4 bg-[#27272a] mx-1" />
-                <button
-                    onClick={onClearChat}
-                    className="p-2 hover:bg-[#27272a] rounded-lg transition-colors group"
-                    title="Clear Chat & Editor"
-                >
-                    <Trash2 className="w-4 h-4 text-zinc-400 group-hover:text-red-400 transition-colors" />
-                </button>
+                <div ref={chatHistoryRef} className="relative">
+                    <button
+                        data-testid="chat-history-trigger"
+                        onClick={() => setChatHistoryOpen((value) => !value)}
+                        className={`p-2 rounded-lg transition-colors ${
+                            chatHistoryOpen
+                                ? 'bg-sky-500/10 text-sky-300'
+                                : 'text-zinc-400 hover:bg-[#27272a] hover:text-zinc-200'
+                        }`}
+                        title="История чатов"
+                    >
+                        <History className="w-4 h-4" />
+                    </button>
+
+                    <ChatSessionsPopover
+                        sessions={sessions}
+                        activeId={activeSessionId}
+                        isOpen={chatHistoryOpen}
+                        onClose={() => setChatHistoryOpen(false)}
+                        onSwitch={switchChat}
+                        onNew={onNewChat}
+                        onDelete={deleteChat}
+                    />
+                </div>
                 <button
                     onClick={() => settings && updateSettings({ ...settings, theme: settings.theme === 'light' ? 'dark' : 'light' })}
                     className="p-2 hover:bg-[#27272a] rounded-lg transition-colors text-zinc-400 hover:text-zinc-200"

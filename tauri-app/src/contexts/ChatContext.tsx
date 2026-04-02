@@ -3,7 +3,6 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import * as api from '../api';
 import { ConfiguratorTitleContext, formatConfiguratorContextForLLM } from '../utils/configurator';
 import { messageQueueService, QueuedMessage } from '../services/MessageQueueService';
-import { useProfiles } from './ProfileContext';
 import { useSettings } from './SettingsContext';
 import { useChatSessions, ChatSession } from '../hooks/useChatSessions';
 
@@ -97,7 +96,6 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
-    const { activeProfile } = useProfiles();
     const { settings } = useSettings();
     const {
         sessions,
@@ -105,6 +103,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         activeSession,
         createSession,
         switchSession,
+        startDraft,
         deleteSession,
         updateSessionMessages,
     } = useChatSessions();
@@ -122,6 +121,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     const chunkBuffer = useRef('');
     const thinkingBuffer = useRef('');
     const flushRafId = useRef<number | null>(null);
+    const didInitializeSessionRef = useRef(false);
 
     const flushChunkBuffer = useCallback(() => {
         flushRafId.current = null;
@@ -194,10 +194,21 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         flushChunkBuffer();
     }, [flushChunkBuffer]);
 
-    // Создать начальную сессию при первом запуске (если нет активной)
+    // В dev + StrictMode mount может происходить дважды.
+    // Если есть сохранённые сессии, но активная не восстановлена, выбираем первую.
+    // Если истории нет, остаёмся в draft-режиме без пустой storage-сессии.
     useEffect(() => {
-        if (!activeSessionId) {
-            createSession();
+        if (didInitializeSessionRef.current) {
+            return;
+        }
+        didInitializeSessionRef.current = true;
+
+        if (activeSessionId && activeSession) {
+            return;
+        }
+
+        if (sessions.length > 0) {
+            switchSession(sessions[0].id);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -221,9 +232,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     // Создать новый чат
     const createNewChat = useCallback(() => {
         setMessages([]);
-        createSession();
+        startDraft();
+        setChatStatus('');
+        setIsLoading(false);
         api.clearNaparnikSession().catch(() => {/* non-critical */});
-    }, [createSession]);
+    }, [startDraft]);
 
     // Переключить чат
     const switchChat = useCallback((id: string) => {
@@ -500,7 +513,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             parts: [{ type: 'text', content: displayContent || content }],
             timestamp: Date.now()
         };
-        setMessages(prev => [...prev, userMessage]);
+        const nextMessages = [...messages, userMessage];
+        if (!activeSessionId) {
+            createSession(nextMessages);
+        }
+        setMessages(nextMessages);
         currentBatchToolIds.current = [];
         setIsLoading(true);
 
@@ -630,7 +647,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             });
             setIsLoading(false);
         }
-    }, [isLoading, messages, activeProfile]);
+    }, [activeSessionId, createSession, isLoading, messages, settings]);
 
     // Дренирование очереди: срабатывает когда isLoading переходит false
     // useEffect гарантирует что sendMessage уже видит isLoading=false
@@ -659,10 +676,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setMessages([]);
         setChatStatus('');
         setIsLoading(false);
-        createSession();
+        startDraft();
         // Reset Naparnik conversation session if provider is OneCNaparnik
         api.clearNaparnikSession().catch(() => {/* non-critical */});
-    }, [createSession]);
+    }, [startDraft]);
 
     const addSystemMessage = useCallback((content: string, variant?: 'warning' | 'info') => {
         setMessages(prev => [

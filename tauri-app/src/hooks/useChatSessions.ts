@@ -49,14 +49,15 @@ export function useChatSessions() {
 
     const activeSession = sessions.find(s => s.id === activeId) ?? null;
 
-    const createSession = useCallback((): string => {
+    const createSession = useCallback((initialMessages: ChatMessage[] = []): string => {
+        const now = Date.now();
         const id = generateId();
         const newSession: ChatSession = {
             id,
-            title: 'Новый чат',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            messages: [],
+            title: getTitle(initialMessages),
+            createdAt: now,
+            updatedAt: now,
+            messages: initialMessages,
         };
         setSessions(prev => {
             const updated = [newSession, ...prev];
@@ -70,14 +71,20 @@ export function useChatSessions() {
         setActiveId(id);
     }, []);
 
+    const startDraft = useCallback(() => {
+        setActiveId(null);
+    }, []);
+
     const deleteSession = useCallback((id: string) => {
-        setSessions(prev => prev.filter(s => s.id !== id));
-        setActiveId(prev => {
-            if (prev !== id) return prev;
-            const remaining = sessions.filter(s => s.id !== id);
-            return remaining[0]?.id ?? null;
+        setSessions(prev => {
+            const remaining = prev.filter(s => s.id !== id);
+            setActiveId(currentActiveId => {
+                if (currentActiveId !== id) return currentActiveId;
+                return remaining[0]?.id ?? null;
+            });
+            return remaining;
         });
-    }, [sessions]);
+    }, []);
 
     const updateSessionMessages = useCallback((id: string | null, messages: ChatMessage[]) => {
         if (!id) return;
@@ -98,6 +105,7 @@ export function useChatSessions() {
         activeSession,
         createSession,
         switchSession,
+        startDraft,
         deleteSession,
         updateSessionMessages,
     };
