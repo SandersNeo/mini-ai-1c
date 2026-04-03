@@ -472,6 +472,10 @@ pub async fn quick_chat_invoke(prompt: String) -> Result<String, String> {
         return Err("1С:Напарник не поддерживается для быстрых действий".to_string());
     }
 
+    if matches!(profile.provider, LLMProvider::CodexCli) {
+        return crate::ai::codex_client::quick_codex_invoke(prompt).await;
+    }
+
     // Qwen CLI uses OAuth token + portal.qwen.ai/v1 (OpenAI-compatible)
     let (api_key, raw_url) = if matches!(profile.provider, LLMProvider::QwenCli) {
         use crate::llm::cli_providers::qwen::QwenCliProvider;

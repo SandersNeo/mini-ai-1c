@@ -40,6 +40,7 @@ impl std::fmt::Display for LLMProvider {
 }
 
 pub const DEFAULT_CODEX_REASONING_EFFORT: &str = "xhigh";
+pub const DEFAULT_CODEX_STREAM_TIMEOUT_SECS: u32 = 120;
 
 pub fn normalize_codex_reasoning_effort(value: Option<&str>) -> Option<String> {
     let normalized = value?.trim().to_ascii_lowercase();
@@ -208,6 +209,18 @@ pub fn load_profiles() -> ProfileStore {
                                     expected_base_url
                                 );
                                 profile.base_url = Some(expected_base_url.to_string());
+                                changed = true;
+                            }
+
+                            if profile.stream_timeout_secs.is_none() {
+                                crate::app_log!(
+                                    force: true,
+                                    "[LLM Profiles] Migrating CodexCli profile '{}' stream_timeout_secs to {}",
+                                    profile.name,
+                                    DEFAULT_CODEX_STREAM_TIMEOUT_SECS
+                                );
+                                profile.stream_timeout_secs =
+                                    Some(DEFAULT_CODEX_STREAM_TIMEOUT_SECS);
                                 changed = true;
                             }
                         }

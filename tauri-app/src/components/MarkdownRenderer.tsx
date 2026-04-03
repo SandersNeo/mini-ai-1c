@@ -18,6 +18,8 @@ interface MarkdownRendererProps {
 export function cleanDiffArtifacts(content: string, originalCode?: string): string {
     if (!content) return '';
     let cleaned = content;
+    const bareXmlDiffRegex = /<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>[\s\S]*?<\/replace>/g;
+    const bareXmlReplaceRegex = /<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>\n?([\s\S]*?)\n?[ \t]*<\/replace>/g;
 
     // 0. Очищаем XML-формат вызова инструментов (Qwen / некоторые другие модели)
     // Формат: <function=name>\n<parameter=x>\n...\n</parameter>\n</function>
@@ -66,7 +68,10 @@ export function cleanDiffArtifacts(content: string, originalCode?: string): stri
     // 7. Обработка нового XML формата <diff>
     if (!originalCode || originalCode.trim().length === 0) {
         // Если контекста нет, вытаскиваем текст из <replace> и рендерим как обычный блок
-        cleaned = cleaned.replace(/<diff>[\s\S]*?<replace>([\s\S]*?)<\/replace>[\s\S]*?<\/diff>/g, (_, p1) => {
+        cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?<replace>([\s\S]*?)<\/replace>[\s\S]*?<\/diff>/g, (_, p1) => {
+            return '\n```bsl\n' + p1.trim() + '\n```\n';
+        });
+        cleaned = cleaned.replace(bareXmlReplaceRegex, (_, p1) => {
             return '\n```bsl\n' + p1.trim() + '\n```\n';
         });
 
@@ -78,17 +83,25 @@ export function cleanDiffArtifacts(content: string, originalCode?: string): stri
         }
 
         // Скрываем мусор от <diff> или <search>
-        cleaned = cleaned.replace(/<diff>[\s\S]*?(?:<\/search>|<search>|$)/g, '');
+        cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?(?:<\/search>|<search>|$)/g, '');
+        cleaned = cleaned.replace(/<search(?:\s+[^>]*)?>[\s\S]*?(?:<\/search>|$)/g, '');
     } else {
         // Очищаем XML формат <diff>, так как дифф будет отрендерен DiffViewer'ом
-        cleaned = cleaned.replace(/<diff>[\s\S]*?<\/diff>/g, '');
+        cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?<\/diff>/g, '');
+        cleaned = cleaned.replace(bareXmlDiffRegex, '');
         // Очищаем незавершенные XML блоки при стриминге
-        if (cleaned.includes('<diff>') && !cleaned.includes('</diff>')) {
-            cleaned = cleaned.replace(/<diff>[\s\S]*/, '');
+        if (/<diff(?:\s+[^>]*)?>/.test(cleaned) && !cleaned.includes('</diff>')) {
+            cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*/, '');
+        }
+        if (/<search(?:\s+[^>]*)?>/.test(cleaned) || /<replace(?:\s+[^>]*)?>/.test(cleaned)) {
+            cleaned = cleaned.replace(/<search(?:\s+[^>]*)?>[\s\S]*/g, '');
+            cleaned = cleaned.replace(/<replace(?:\s+[^>]*)?>[\s\S]*/g, '');
         }
     }
 
-    const hasBlocks = /<{5,10} SEARCH/.test(content);
+    const hasBlocks = /<{5,10} SEARCH/.test(content)
+        || /<diff(?:\s+[^>]*)?>/.test(content)
+        || /<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>/.test(content);
     const result = cleaned.trim();
 
     if (!result && hasBlocks) {

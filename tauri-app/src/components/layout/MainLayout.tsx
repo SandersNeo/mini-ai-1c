@@ -428,6 +428,7 @@ export function MainLayout() {
                             loadedContextCode={loadedContextCode}
                             isContextSelection={isContextSelection}
                             onClearContext={clearContext}
+                            onPrepareDiffBase={syncBaseline}
                             onApplyCode={handleChatApplyCode}
                             onCommitCode={handleCommitCode}
                             onCodeLoaded={handleCodeLoaded}

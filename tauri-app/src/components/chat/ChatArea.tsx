@@ -30,6 +30,7 @@ interface ChatAreaProps {
     loadedContextCode?: string | null;
     isContextSelection?: boolean;
     onClearContext?: () => void;
+    onPrepareDiffBase?: (code: string) => void;
     onApplyCode?: (code: string) => void;
     onCommitCode?: (code: string) => void;
     onCodeLoaded?: (code: string, isSelection: boolean) => void;
@@ -272,6 +273,7 @@ export function ChatArea({
     loadedContextCode,
     isContextSelection: isContextSelectionProp = false,
     onClearContext,
+    onPrepareDiffBase,
     onApplyCode,
     onCommitCode,
     onCodeLoaded,
@@ -397,7 +399,7 @@ export function ChatArea({
         }
 
         let expanded = foundCmd.template;
-        let activeCode = options?.codeOverride ?? contextCode ?? modifiedCode ?? '';
+        let activeCode = options?.codeOverride ?? modifiedCode ?? contextCode ?? '';
         if (expanded.includes('{code}') && !options?.codeOverride && !activeCode && selectedHwnd) {
             try {
                 const fetchedCode = await getCode(true);
@@ -775,7 +777,7 @@ export function ChatArea({
         if (!isLoading) {
             // Открываем боковую панель только если есть базовый код для сравнения.
             // Если код не был загружен из Конфигуратора — панель не открываем.
-            const hasBaseCode = !!(contextCode || modifiedCode || originalCode);
+            const hasBaseCode = !!(modifiedCode || contextCode || originalCode);
             if (hasBaseCode && onActiveDiffChange) {
                 onActiveDiffChange(lastMsg.content);
             }
@@ -804,13 +806,16 @@ export function ChatArea({
 
         if (!textToSend.trim()) return;
 
-        // ... rest of the logic ...
+        const requestBaseCode = modifiedCode || contextCode || originalCode || '';
+        if (requestBaseCode.trim()) {
+            onPrepareDiffBase?.(requestBaseCode);
+        }
 
         const diagStrings = (diagnostics || []).map((d: any) => `- Line ${d.line + 1}: ${d.message} (${d.severity})`);
 
         // Если это расширенная слеш-команда, мы НЕ передаем contextCode повторно, 
         // так как он уже вставлен в expanded-шаблон через {code}
-        const finalContext = isSlashCommand ? undefined : (contextCode || modifiedCode);
+        const finalContext = isSlashCommand ? undefined : (modifiedCode || contextCode || undefined);
 
         sendMessage(textToSend, finalContext, diagStrings, displayContent, configuratorTitleCtx);
         setInput('');
@@ -851,6 +856,14 @@ export function ChatArea({
                 }
                 console.log("[TEST] Baseline code set and propagated, length:", code.length);
             },
+            setWorkingCode: (code: string) => {
+                onApplyCode?.(code);
+                console.log("[TEST] Working code replaced, length:", code.length);
+            },
+            syncDiffBase: (code: string) => {
+                onPrepareDiffBase?.(code);
+                console.log("[TEST] Diff base synced, length:", code.length);
+            },
             sendMessage: (text: string) => {
                 setInput(text);
                 console.log("[TEST] Triggering sendMessage with:", text);
@@ -864,10 +877,26 @@ export function ChatArea({
                     parts: [{ type: 'text', content }],
                     timestamp: Date.now(),
                 });
-            }
+            },
+            getCodeState: () => ({
+                originalCode,
+                modifiedCode,
+                loadedContextCode: contextCode,
+                activeDiffContent: activeDiffContent || '',
+            }),
         };
         return () => { delete (window as any).__MINI_AI_TEST__; };
-    }, [handleSendMessage, onCodeLoaded, injectMessage]);
+    }, [
+        activeDiffContent,
+        contextCode,
+        handleSendMessage,
+        injectMessage,
+        modifiedCode,
+        onApplyCode,
+        onCodeLoaded,
+        onPrepareDiffBase,
+        originalCode,
+    ]);
 
     const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const value = e.target.value;
@@ -955,7 +984,11 @@ export function ChatArea({
     const handleSaveEdit = (index: number) => {
         if (editText.trim()) {
             const diagStrings = (diagnostics || []).map((d: any) => `- Line ${d.line + 1}: ${d.message} (${d.severity})`);
-            editAndRerun(index, editText, contextCode || modifiedCode, diagStrings, undefined, configuratorTitleCtx);
+            const rerunBaseCode = modifiedCode || contextCode || originalCode || '';
+            if (rerunBaseCode.trim()) {
+                onPrepareDiffBase?.(rerunBaseCode);
+            }
+            editAndRerun(index, editText, rerunBaseCode || undefined, diagStrings, undefined, configuratorTitleCtx);
             setEditingIndex(null);
             setEditText('');
         }
@@ -1172,7 +1205,7 @@ export function ChatArea({
                                                             );
                                                         } else {
                                                             // text
-                                                            const currentOriginalCode = contextCode || modifiedCode || "";
+                                                            const currentOriginalCode = modifiedCode || contextCode || originalCode || "";
                                                             const cleanedContent = cleanDiffArtifacts(part.content || '', currentOriginalCode);
                                                             if (cleanedContent.trim().length === 0) {
                                                                 if (!hasDiffBlocks(part.content || '')) return null;
@@ -1247,7 +1280,7 @@ export function ChatArea({
 
                                                     {/* Content */}
                                                     {(() => {
-                                                        const currentOriginalCode = contextCode || modifiedCode || "";
+                                                        const currentOriginalCode = modifiedCode || contextCode || originalCode || "";
                                                         const cleanedContent = cleanDiffArtifacts(msg.content || '', currentOriginalCode);
                                                         const hasVisibleContent = cleanedContent.trim().length > 0;
 
@@ -1305,7 +1338,7 @@ export function ChatArea({
                                                             );
                                                         }
 
-                                                        const currentOriginalCode = contextCode || modifiedCode || "";
+                                                        const currentOriginalCode = modifiedCode || contextCode || originalCode || "";
                                                         const hasContext = currentOriginalCode.trim().length > 0;
                                                         const shouldShowBanner = hasContext &&
                                                             i === lastDiffMsgIndex &&
@@ -1321,8 +1354,7 @@ export function ChatArea({
                                                                 content={msg.content}
                                                                 onApply={() => {
                                                                     // Применяем дифф только сейчас — по явному подтверждению пользователя
-                                                                    const baseCode = originalCode || modifiedCode || "";
-                                                                    const diffResult = applyDiffWithDiagnostics(baseCode, msg.content);
+                                                                    const diffResult = applyDiffWithDiagnostics(currentOriginalCode, msg.content);
                                                                     if (onApplyCode) {
                                                                         onApplyCode(diffResult.code);
                                                                     }

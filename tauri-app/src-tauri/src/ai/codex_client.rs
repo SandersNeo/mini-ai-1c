@@ -15,6 +15,7 @@ use tauri::Emitter;
 use super::models::{ApiMessage, Tool, ToolCall, ToolCallFunction};
 use crate::llm_profiles::{
     get_active_profile, normalize_codex_reasoning_effort, DEFAULT_CODEX_REASONING_EFFORT,
+    DEFAULT_CODEX_STREAM_TIMEOUT_SECS,
 };
 
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -24,6 +25,11 @@ const DEFAULT_CODEX_INSTRUCTIONS: &str =
     "You are Codex, a coding assistant running inside Mini AI 1C.";
 /// Codex requires tool names ≤ 64 characters
 const MAX_TOOL_NAME_LEN: usize = 64;
+const CODEX_HTTP_TIMEOUT_SECS: u64 = 120;
+
+fn resolve_codex_stream_timeout_secs(configured_timeout_secs: Option<u32>) -> u32 {
+    configured_timeout_secs.unwrap_or(DEFAULT_CODEX_STREAM_TIMEOUT_SECS)
+}
 
 // ─── Request types ──────────────────────────────────────────────────────────
 
@@ -250,8 +256,225 @@ fn resolve_codex_reasoning_effort(profile: &crate::llm_profiles::LLMProfile) -> 
         .unwrap_or_else(|| DEFAULT_CODEX_REASONING_EFFORT.to_string())
 }
 
+fn resolve_codex_model(profile: &crate::llm_profiles::LLMProfile) -> String {
+    if profile.model.trim().is_empty()
+        || matches!(
+            profile.model.as_str(),
+            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant"
+        )
+    {
+        "gpt-5.4".to_string()
+    } else {
+        profile.model.clone()
+    }
+}
+
 fn safe_api_error_summary(status: reqwest::StatusCode, body: &str) -> String {
     format!("status={} body_len={}", status.as_u16(), body.len())
+}
+
+fn codex_api_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    match status.as_u16() {
+        401 => "Codex: токен недействителен. Переавторизуйтесь в настройках профиля.".to_string(),
+        429 => "Codex: превышен лимит запросов. Попробуйте позже.".to_string(),
+        _ => serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("Codex API error {} (подробности скрыты)", status.as_u16())),
+    }
+}
+
+fn build_codex_request(
+    profile: &crate::llm_profiles::LLMProfile,
+    messages: &[ApiMessage],
+    tools: Option<Vec<CodexTool>>,
+    stream: bool,
+) -> CodexRequest {
+    let (instructions, input) = messages_to_codex_payload(messages);
+
+    CodexRequest {
+        model: resolve_codex_model(profile),
+        instructions,
+        input,
+        tools,
+        stream,
+        reasoning: CodexReasoning {
+            effort: resolve_codex_reasoning_effort(profile),
+            summary: "auto".to_string(),
+        },
+        include: vec!["reasoning.encrypted_content".to_string()],
+        store: false,
+    }
+}
+
+async fn resolve_codex_access_token(profile_id: &str) -> Result<(String, Option<String>), String> {
+    let (access_token, refresh_token, expires_at, account_id) =
+        crate::llm::cli_providers::codex::CodexCliProvider::get_token(profile_id)?
+            .ok_or("Codex CLI: требуется авторизация. Откройте настройки профиля и нажмите 'Войти через браузер'.")?;
+
+    let access_token = if chrono::Utc::now().timestamp() as u64 + 60 > expires_at {
+        if let Some(rt) = refresh_token.as_deref() {
+            crate::app_log!(force: true, "[Codex] Token expired, attempting refresh...");
+            match crate::llm::cli_providers::codex::CodexCliProvider::refresh_access_token(
+                profile_id, rt,
+            )
+            .await
+            {
+                Ok(()) => {
+                    crate::llm::cli_providers::codex::CodexCliProvider::get_token(profile_id)?
+                        .map(|(at, _, _, _)| at)
+                        .unwrap_or(access_token)
+                }
+                Err(e) => {
+                    crate::app_log!(force: true, "[Codex] Token refresh failed: {}", e);
+                    access_token
+                }
+            }
+        } else {
+            access_token
+        }
+    } else {
+        access_token
+    };
+
+    Ok((access_token, account_id))
+}
+
+async fn send_codex_request(
+    request_body: &CodexRequest,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    let headers = build_headers(access_token, account_id)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(CODEX_HTTP_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("HTTP client build error: {}", e))?;
+
+    client
+        .post(format!("{}{}", CODEX_BASE_URL, CODEX_RESPONSES_ENDPOINT))
+        .headers(headers)
+        .json(request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Codex: ошибка сети: {}", e))
+}
+
+pub async fn quick_codex_invoke(prompt: String) -> Result<String, String> {
+    let profile = get_active_profile().ok_or("Нет активного LLM профиля")?;
+    let (access_token, account_id) = resolve_codex_access_token(&profile.id).await?;
+    let stream_timeout_secs = resolve_codex_stream_timeout_secs(profile.stream_timeout_secs);
+    let messages = vec![ApiMessage {
+        role: "user".to_string(),
+        content: Some(prompt),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    let request_body = build_codex_request(&profile, &messages, None, true);
+
+    crate::app_log!(
+        force: true,
+        "[Codex][QuickAction] Sending request to {}{} (model={}, effort={})",
+        CODEX_BASE_URL,
+        CODEX_RESPONSES_ENDPOINT,
+        &request_body.model,
+        &request_body.reasoning.effort
+    );
+
+    let response = send_codex_request(&request_body, &access_token, account_id.as_deref()).await?;
+    let status = response.status();
+
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        crate::app_log!(
+            force: true,
+            "[Codex][QuickAction] API error: {}",
+            safe_api_error_summary(status, &body)
+        );
+        return Err(codex_api_error_message(status, &body));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut byte_buffer = Vec::new();
+    let mut full_content = String::new();
+
+    'stream_loop: loop {
+        let chunk_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(stream_timeout_secs as u64),
+            stream.next(),
+        )
+        .await
+        {
+            Err(_) => {
+                return Err(format!(
+                    "Codex: таймаут потока ({} сек без данных)",
+                    stream_timeout_secs
+                ))
+            }
+            Ok(None) => break 'stream_loop,
+            Ok(Some(r)) => r,
+        };
+
+        let chunk = chunk_result.map_err(|e| format!("Codex stream error: {}", e))?;
+        byte_buffer.extend_from_slice(&chunk);
+
+        while let Some(pos) = byte_buffer.windows(2).position(|w| w == b"\n\n") {
+            let event_bytes = byte_buffer.drain(..pos + 2).collect::<Vec<u8>>();
+            let event_str = String::from_utf8_lossy(&event_bytes);
+
+            let mut event_type = String::new();
+            let mut event_data = String::new();
+
+            for line in event_str.lines() {
+                if let Some(t) = line.strip_prefix("event: ") {
+                    event_type = t.trim().to_string();
+                } else if let Some(d) = line.strip_prefix("data: ") {
+                    event_data = d.trim().to_string();
+                }
+            }
+
+            if event_data.is_empty() || event_data == "[DONE]" {
+                continue;
+            }
+
+            let evt: SseEvent = match serde_json::from_str(&event_data) {
+                Ok(e) => e,
+                Err(_) => {
+                    if event_type.is_empty() {
+                        continue;
+                    }
+                    SseEvent {
+                        r#type: event_type.clone(),
+                        delta: None,
+                        item: None,
+                        call_id: None,
+                    }
+                }
+            };
+
+            match evt.r#type.as_str() {
+                "response.output_text.delta" => {
+                    if let Some(delta) = &evt.delta {
+                        if !delta.is_empty() {
+                            full_content.push_str(delta);
+                        }
+                    }
+                }
+                "response.completed" => break 'stream_loop,
+                "error" => {
+                    let err_msg = serde_json::from_str::<Value>(&event_data)
+                        .ok()
+                        .and_then(|v| v["message"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| format!("Codex stream error: {}", event_data));
+                    return Err(err_msg);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(full_content)
 }
 
 // ─── Main streaming function ──────────────────────────────────────────────
@@ -402,14 +625,24 @@ pub async fn stream_codex_completion(
     let mut announced_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let _ = app_handle.emit("chat-status", "Получаю ответ Codex...");
+    let stream_timeout_secs = resolve_codex_stream_timeout_secs(profile.stream_timeout_secs);
 
     'stream_loop: loop {
-        let chunk_result =
-            match tokio::time::timeout(std::time::Duration::from_secs(30), stream.next()).await {
-                Err(_) => return Err("Codex: таймаут потока (30 сек без данных)".to_string()),
-                Ok(None) => break 'stream_loop,
-                Ok(Some(r)) => r,
-            };
+        let chunk_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(stream_timeout_secs as u64),
+            stream.next(),
+        )
+        .await
+        {
+            Err(_) => {
+                return Err(format!(
+                    "Codex: таймаут потока ({} сек без данных)",
+                    stream_timeout_secs
+                ))
+            }
+            Ok(None) => break 'stream_loop,
+            Ok(Some(r)) => r,
+        };
 
         let chunk = chunk_result.map_err(|e| format!("Codex stream error: {}", e))?;
         byte_buffer.extend_from_slice(&chunk);
@@ -625,4 +858,118 @@ pub async fn stream_codex_completion(
         tool_call_id: None,
         name: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_codex_request, messages_to_codex_payload, resolve_codex_model,
+        resolve_codex_stream_timeout_secs, CodexInputItem, DEFAULT_CODEX_INSTRUCTIONS,
+    };
+    use crate::ai::models::ApiMessage;
+    use crate::llm_profiles::{
+        LLMProfile, LLMProvider, DEFAULT_CODEX_REASONING_EFFORT, DEFAULT_CODEX_STREAM_TIMEOUT_SECS,
+    };
+    use serde_json::Value;
+
+    #[test]
+    fn messages_to_codex_payload_promotes_system_messages_to_instructions() {
+        let messages = vec![
+            ApiMessage {
+                role: "system".to_string(),
+                content: Some("system instructions".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ApiMessage {
+                role: "developer".to_string(),
+                content: Some("developer instructions".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ApiMessage {
+                role: "user".to_string(),
+                content: Some("user request".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let (instructions, input) = messages_to_codex_payload(&messages);
+
+        assert!(instructions.contains("system instructions"));
+        assert!(instructions.contains("developer instructions"));
+        assert_eq!(input.len(), 1);
+        assert!(matches!(&input[0], CodexInputItem::Message(_)));
+
+        if let CodexInputItem::Message(message) = &input[0] {
+            assert_eq!(message.role, "user");
+            assert_eq!(message.content, Value::String("user request".to_string()));
+        }
+    }
+
+    #[test]
+    fn messages_to_codex_payload_uses_default_instructions_without_system_messages() {
+        let messages = vec![ApiMessage {
+            role: "user".to_string(),
+            content: Some("hello".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let (instructions, input) = messages_to_codex_payload(&messages);
+
+        assert_eq!(instructions, DEFAULT_CODEX_INSTRUCTIONS);
+        assert_eq!(input.len(), 1);
+        assert!(matches!(&input[0], CodexInputItem::Message(_)));
+    }
+
+    #[test]
+    fn resolve_codex_stream_timeout_uses_codex_default_when_profile_timeout_missing() {
+        assert_eq!(
+            resolve_codex_stream_timeout_secs(None),
+            DEFAULT_CODEX_STREAM_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn resolve_codex_stream_timeout_preserves_profile_timeout_when_present() {
+        assert_eq!(resolve_codex_stream_timeout_secs(Some(180)), 180);
+    }
+
+    #[test]
+    fn resolve_codex_model_maps_legacy_aliases_to_default_model() {
+        let mut profile = LLMProfile::default_profile();
+        profile.provider = LLMProvider::CodexCli;
+        profile.model = "codex-mini-latest".to_string();
+
+        assert_eq!(resolve_codex_model(&profile), "gpt-5.4");
+    }
+
+    #[test]
+    fn build_codex_request_uses_responses_api_shape_for_quick_invokes() {
+        let mut profile = LLMProfile::default_profile();
+        profile.provider = LLMProvider::CodexCli;
+        profile.model = "codex-mini-latest".to_string();
+
+        let messages = vec![ApiMessage {
+            role: "user".to_string(),
+            content: Some("describe this method".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let request = build_codex_request(&profile, &messages, None, true);
+
+        assert_eq!(request.model, "gpt-5.4");
+        assert_eq!(request.reasoning.effort, DEFAULT_CODEX_REASONING_EFFORT);
+        assert!(request.stream);
+        assert!(request.tools.is_none());
+        assert_eq!(request.input.len(), 1);
+    }
 }

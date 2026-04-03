@@ -344,9 +344,17 @@ export function parseDiffBlocks(content: string): DiffBlock[] {
         blocks.push(createBlock(xmlMatch[1].split('\n'), xmlMatch[2].split('\n'), index++));
     }
 
+    // Парсим bare XML-пары без внешнего <diff>...</diff>
+    const bareXmlRegex = /<search(?:\s+[^>]*)?\>\n?([\s\S]*?)\n?[ \t]*<\/search>\s*<replace(?:\s+[^>]*)?\>\n?([\s\S]*?)\n?[ \t]*<\/replace>/g;
+    const bareContent = content.replace(xmlRegex, '');
+    let bareXmlMatch;
+    while ((bareXmlMatch = bareXmlRegex.exec(bareContent)) !== null) {
+        blocks.push(createBlock(bareXmlMatch[1].split('\n'), bareXmlMatch[2].split('\n'), index++));
+    }
+
     // Парсим SEARCH/REPLACE формат (legacy)
     // Поддерживаем 5-9 символов chevron и лишний > в маркерах (Claude Sonnet 4 иногда добавляет)
-    const legacyContent = content.replace(xmlRegex, '');
+    const legacyContent = bareContent.replace(bareXmlRegex, '');
     const lines = legacyContent.split('\n');
     let mode: 'none' | 'search' | 'replace' = 'none';
     let searchLines: string[] = [];
@@ -919,7 +927,9 @@ export function formatDiffErrorMessage(result: DiffApplyResult): string | null {
 
 /** Проверяет, содержит ли сообщение блоки diff */
 export function hasDiffBlocks(content: string): boolean {
-    return /<<<<<<< SEARCH/.test(content) || /<diff>/.test(content);
+    return /<<<<<<< SEARCH/.test(content)
+        || /<diff(?:\s+[^>]*)?>/.test(content)
+        || /<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>/.test(content);
 }
 
 /** Проверяет, можно ли применить хотя бы один дифф-блок к исходному коду */
@@ -942,8 +952,11 @@ export function hasApplicableDiffBlocks(originalCode: string, content: string): 
 export function cleanDiffArtifacts(content: string): string {
     let cleaned = content.replace(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/g, '');
     cleaned = cleaned.replace(/<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?(?:\n|$)/g, '');
-    cleaned = cleaned.replace(/<diff>[\s\S]*?<\/diff>/g, '');
-    cleaned = cleaned.replace(/<diff>[\s\S]*?(?:\n|$)/g, '');
+    cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?<\/diff>/g, '');
+    cleaned = cleaned.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?(?:\n|$)/g, '');
+    cleaned = cleaned.replace(/<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>[\s\S]*?<\/replace>/g, '');
+    cleaned = cleaned.replace(/<search(?:\s+[^>]*)?>[\s\S]*?(?:<\/search>|$)/g, '');
+    cleaned = cleaned.replace(/<replace(?:\s+[^>]*)?>[\s\S]*?(?:<\/replace>|$)/g, '');
     return cleaned.trim();
 }
 
@@ -971,8 +984,11 @@ export function extractDisplayCode(originalCode: string, response: string): stri
 export function stripCodeBlocks(content: string): string {
     let s = content.replace(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/g, '');
     s = s.replace(/<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?(?:\n|$)/g, '');
-    s = s.replace(/<diff>[\s\S]*?<\/diff>/g, '');
-    s = s.replace(/<diff>[\s\S]*?(?:\n|$)/g, '');
+    s = s.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?<\/diff>/g, '');
+    s = s.replace(/<diff(?:\s+[^>]*)?>[\s\S]*?(?:\n|$)/g, '');
+    s = s.replace(/<search(?:\s+[^>]*)?>[\s\S]*?<\/search>\s*<replace(?:\s+[^>]*)?>[\s\S]*?<\/replace>/g, '');
+    s = s.replace(/<search(?:\s+[^>]*)?>[\s\S]*?(?:<\/search>|$)/g, '');
+    s = s.replace(/<replace(?:\s+[^>]*)?>[\s\S]*?(?:<\/replace>|$)/g, '');
     s = s.replace(/```(?:bsl|1c)([\s\S]*?)```/gi, '');
     return s.trim();
 }

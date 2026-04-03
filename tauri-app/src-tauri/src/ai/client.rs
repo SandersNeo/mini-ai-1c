@@ -275,13 +275,28 @@ pub async fn stream_chat_completion(
         if matches!(p.provider, LLMProvider::OneCNaparnik) {
             return super::naparnik_client::stream_naparnik_completion(messages, app_handle).await;
         }
-        if matches!(p.provider, LLMProvider::CodexCli) {
-            return super::codex_client::stream_codex_completion(messages, app_handle).await;
-        }
     }
 
     let profile = get_active_profile().ok_or("No active LLM profile")?;
     let has_tool_heavy_context = qwen_has_tool_heavy_context(&messages);
+    // Build the same dynamic system prompt for all providers, including Codex CLI.
+    let tools_info = get_available_tools().await;
+    let tools: Vec<Tool> = tools_info.iter().map(|i| i.tool.clone()).collect();
+    let tools_opt = if tools.is_empty() { None } else { Some(tools) };
+
+    let mut api_messages = vec![ApiMessage {
+        role: "system".to_string(),
+        content: Some(get_system_prompt(&tools_info, &messages)),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    api_messages.extend(messages);
+
+    if matches!(profile.provider, LLMProvider::CodexCli) {
+        return super::codex_client::stream_codex_completion(api_messages, app_handle).await;
+    }
+
     let (api_key, url) = if matches!(profile.provider, LLMProvider::QwenCli) {
         let token_info = crate::llm::cli_providers::qwen::QwenCliProvider::get_token(&profile.id)?;
         let (access_token, refresh_token, expires_at, resource_url) =
@@ -349,21 +364,6 @@ pub async fn stream_chat_completion(
         };
         (api_key, format!("{}/chat/completions", base_url))
     };
-
-    // Get tools first to build dynamic prompt
-    let tools_info = get_available_tools().await;
-    let tools: Vec<Tool> = tools_info.iter().map(|i| i.tool.clone()).collect();
-    let tools_opt = if tools.is_empty() { None } else { Some(tools) };
-
-    // Build messages with dynamic system prompt
-    let mut api_messages = vec![ApiMessage {
-        role: "system".to_string(),
-        content: Some(get_system_prompt(&tools_info, &messages)),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    }];
-    api_messages.extend(messages);
 
     let api_max_tokens = if matches!(profile.provider, LLMProvider::QwenCli) {
         qwen_max_tokens(profile.max_tokens, has_tool_heavy_context)
