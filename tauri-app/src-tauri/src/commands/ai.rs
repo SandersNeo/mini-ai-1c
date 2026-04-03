@@ -53,6 +53,7 @@ const CONTEXT_PRUNE_THRESHOLD: usize = 7000;
 /// Maximum chars per tool result to prevent a single large response from blowing up context.
 /// 8000 chars ≈ 2000 tokens per tool result.
 const MAX_TOOL_RESULT_CHARS: usize = 8000;
+const MAX_CODEX_TOOL_NAME_LEN: usize = 64;
 
 fn is_tool_result_cacheable(server_id: &str) -> bool {
     matches!(server_id, "builtin-1c-metadata")
@@ -60,6 +61,21 @@ fn is_tool_result_cacheable(server_id: &str) -> bool {
 
 fn build_tool_cache_key(server_id: &str, tool_name: &str, raw_arguments: &str) -> String {
     format!("{server_id}::{tool_name}::{raw_arguments}")
+}
+
+fn sanitize_tool_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect()
+}
+
+fn sanitize_codex_tool_name(name: &str) -> String {
+    let sanitized = sanitize_tool_name(name);
+    if sanitized.len() > MAX_CODEX_TOOL_NAME_LEN {
+        sanitized[..MAX_CODEX_TOOL_NAME_LEN].to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Estimates token count for a slice of messages (chars / 4 approximation).
@@ -408,12 +424,9 @@ pub async fn stream_chat(
                         {
                             if let Ok(tools) = client.list_tools().await {
                                 let target_tool = tools.into_iter().find(|t| {
-                                    let sanitized = t
-                                        .name
-                                        .chars()
-                                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                                        .collect::<String>();
+                                    let sanitized = sanitize_tool_name(&t.name);
                                     sanitized == *tool_name
+                                        || sanitize_codex_tool_name(&t.name) == *tool_name
                                 });
 
                                 if let Some(t) = target_tool {
@@ -843,7 +856,10 @@ pub async fn compact_context(messages_json: String) -> Result<String, String> {
 
     let base_url = {
         let trimmed = raw_url.trim_end_matches('/');
-        if matches!(profile.provider, crate::llm_profiles::LLMProvider::LMStudio) && !trimmed.ends_with("/v1")
+        if matches!(
+            profile.provider,
+            crate::llm_profiles::LLMProvider::Ollama | crate::llm_profiles::LLMProvider::LMStudio
+        ) && !trimmed.ends_with("/v1")
         {
             format!("{}/v1/chat/completions", trimmed)
         } else {

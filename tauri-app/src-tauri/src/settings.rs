@@ -606,6 +606,19 @@ pub fn load_settings() -> AppSettings {
         }
     }
 
+    let profile_store = crate::llm_profiles::load_profiles();
+    if !profile_store.active_profile_id.is_empty()
+        && settings.active_llm_profile != profile_store.active_profile_id
+    {
+        crate::app_log!(
+            "[SETTINGS] Syncing legacy active_llm_profile '{}' -> '{}'",
+            settings.active_llm_profile,
+            profile_store.active_profile_id
+        );
+        settings.active_llm_profile = profile_store.active_profile_id;
+        modified = true;
+    }
+
     if modified {
         let _ = save_settings(&settings);
     }

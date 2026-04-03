@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import * as api from '../api';
 
 import { LLMProfile, ProfileStore } from '../api';
@@ -31,6 +32,16 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         loadProfiles();
+    }, [loadProfiles]);
+
+    useEffect(() => {
+        const unlistenPromise = listen<string>('profiles-changed', () => {
+            void loadProfiles();
+        });
+
+        return () => {
+            void unlistenPromise.then(unlisten => unlisten());
+        };
     }, [loadProfiles]);
 
     const handleSetActiveProfile = React.useCallback(async (id: string) => {

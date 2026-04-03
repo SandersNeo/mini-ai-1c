@@ -406,6 +406,8 @@ impl QwenCliProvider {
                                             .to_rfc3339(),
                                     ),
                                     usage,
+                                    usage_windows: None,
+                                    usage_plan: None,
                                 });
                             }
                         }
@@ -423,6 +425,8 @@ impl QwenCliProvider {
                             .to_rfc3339(),
                     ),
                     usage: None,
+                    usage_windows: None,
+                    usage_plan: None,
                 });
             }
 
@@ -435,12 +439,16 @@ impl QwenCliProvider {
                         .to_rfc3339(),
                 ),
                 usage,
+                usage_windows: None,
+                usage_plan: None,
             })
         } else {
             Ok(CliStatus {
                 is_authenticated: false,
                 auth_expires_at: None,
                 usage: None,
+                usage_windows: None,
+                usage_plan: None,
             })
         }
     }

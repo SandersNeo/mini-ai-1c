@@ -1,5 +1,34 @@
+use crate::llm::cli_providers::codex::CodexCliProvider;
 use crate::llm::cli_providers::qwen::QwenCliProvider;
 use crate::llm_profiles::{self, LLMProfile, ProfileStore};
+use tauri::{AppHandle, Emitter};
+
+fn sync_legacy_active_profile(active_profile_id: &str) {
+    if active_profile_id.is_empty() {
+        return;
+    }
+
+    let mut settings = crate::settings::load_settings();
+    if settings.active_llm_profile == active_profile_id {
+        return;
+    }
+
+    settings.active_llm_profile = active_profile_id.to_string();
+    if let Err(err) = crate::settings::save_settings(&settings) {
+        crate::app_log!(
+            force: true,
+            "[Profiles] Failed to sync settings.active_llm_profile: {}",
+            err
+        );
+    }
+}
+
+fn persist_profile_store(store: &ProfileStore, app_handle: &AppHandle) -> Result<(), String> {
+    llm_profiles::save_profiles(store)?;
+    sync_legacy_active_profile(&store.active_profile_id);
+    let _ = app_handle.emit("profiles-changed", &store.active_profile_id);
+    Ok(())
+}
 
 /// Get all LLM profiles
 #[tauri::command]
@@ -9,7 +38,11 @@ pub fn get_profiles() -> ProfileStore {
 
 /// Save profile
 #[tauri::command]
-pub fn save_profile(mut profile: LLMProfile, api_key: Option<String>) -> Result<(), String> {
+pub fn save_profile(
+    mut profile: LLMProfile,
+    api_key: Option<String>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
     let mut store = llm_profiles::load_profiles();
     let existing_encrypted = store
         .profiles
@@ -47,12 +80,12 @@ pub fn save_profile(mut profile: LLMProfile, api_key: Option<String>) -> Result<
         store.profiles.push(profile);
     }
 
-    llm_profiles::save_profiles(&store)
+    persist_profile_store(&store, &app_handle)
 }
 
 /// Delete a profile
 #[tauri::command]
-pub fn delete_profile(profile_id: String) -> Result<(), String> {
+pub fn delete_profile(profile_id: String, app_handle: AppHandle) -> Result<(), String> {
     let mut store = llm_profiles::load_profiles();
 
     // Check if profile exists
@@ -70,6 +103,8 @@ pub fn delete_profile(profile_id: String) -> Result<(), String> {
     if let Some(p) = &profile {
         if matches!(p.provider, crate::llm_profiles::LLMProvider::QwenCli) {
             let _ = QwenCliProvider::logout(&profile_id); // ignore error if no token exists
+        } else if matches!(p.provider, crate::llm_profiles::LLMProvider::CodexCli) {
+            let _ = CodexCliProvider::logout(&profile_id); // ignore error if no token exists
         }
     }
 
@@ -83,12 +118,12 @@ pub fn delete_profile(profile_id: String) -> Result<(), String> {
         }
     }
 
-    llm_profiles::save_profiles(&store)
+    persist_profile_store(&store, &app_handle)
 }
 
 /// Set active profile
 #[tauri::command]
-pub fn set_active_profile(profile_id: String) -> Result<(), String> {
+pub fn set_active_profile(profile_id: String, app_handle: AppHandle) -> Result<(), String> {
     let mut store = llm_profiles::load_profiles();
 
     if !store.profiles.iter().any(|p| p.id == profile_id) {
@@ -96,7 +131,7 @@ pub fn set_active_profile(profile_id: String) -> Result<(), String> {
     }
 
     store.active_profile_id = profile_id;
-    llm_profiles::save_profiles(&store)
+    persist_profile_store(&store, &app_handle)
 }
 
 /// Fetch models for a profile (using stored profile settings)
@@ -168,6 +203,11 @@ pub async fn fetch_models_for_profile(
         .iter()
         .find(|p| p.id == profile_id)
         .ok_or("Profile not found")?;
+
+    // CLI providers use OAuth token, not API key — route to their own fetch_models
+    if profile.provider.to_string() == "CodexCli" {
+        return CodexCliProvider::fetch_models(&profile_id).await;
+    }
 
     let api_key = profile.try_get_api_key()?;
     let base_url = profile.get_base_url();

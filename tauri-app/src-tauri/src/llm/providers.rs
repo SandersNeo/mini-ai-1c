@@ -26,6 +26,67 @@ const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hawkxtreme/mini-ai-1c/main/registry/models.json"; // Placeholder
                                                                                          // const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 
+pub fn static_codex_models() -> Vec<Model> {
+    vec![
+        Model {
+            id: "gpt-5.4".into(),
+            name: "GPT-5.4".into(),
+            context_window: 272_000,
+            description: Some("Latest frontier agentic coding model.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.4-mini".into(),
+            name: "GPT-5.4 Mini".into(),
+            context_window: 272_000,
+            description: Some("Smaller frontier agentic coding model.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.3-codex".into(),
+            name: "GPT-5.3 Codex".into(),
+            context_window: 272_000,
+            description: Some("Frontier Codex-optimized agentic coding model.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.2-codex".into(),
+            name: "GPT-5.2 Codex".into(),
+            context_window: 272_000,
+            description: Some("Frontier agentic coding model.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.2".into(),
+            name: "GPT-5.2".into(),
+            context_window: 272_000,
+            description: Some("Optimized for professional work and long-running agents.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.1-codex-max".into(),
+            name: "GPT-5.1 Codex Max".into(),
+            context_window: 272_000,
+            description: Some("Codex-optimized model for deep and fast reasoning.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+        Model {
+            id: "gpt-5.1-codex-mini".into(),
+            name: "GPT-5.1 Codex Mini".into(),
+            context_window: 272_000,
+            description: Some("Optimized for codex. Cheaper, faster, but less capable.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+    ]
+}
+
 pub async fn fetch_models_from_api(
     provider_id: &str,
     base_url: &str,
@@ -69,6 +130,10 @@ pub async fn fetch_models_from_api(
                 cost_out: None,
             },
         ]);
+    }
+
+    if provider_id == "CodexCli" {
+        return Ok(static_codex_models());
     }
 
     let requires_api_key = matches!(

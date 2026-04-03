@@ -15,10 +15,11 @@ import { applyDiff, applyDiffWithDiagnostics, formatDiffErrorMessage, hasDiffBlo
 import { FileDiff, Plus, Minus, Edit2, PanelRight } from 'lucide-react';
 import { CommandMenu } from './CommandMenu';
 import { ContextChips } from './ContextChips';
-import { DEFAULT_SLASH_COMMANDS, SlashCommand, CliStatus } from '../../types/settings';
+import { DEFAULT_SLASH_COMMANDS, SlashCommand, CliStatus, CliUsageWindow } from '../../types/settings';
 import type { OverlayQuickActionSessionPayload } from '../../types/quickActionSessions';
 import { cliProvidersApi } from '../../api/cli_providers';
 import { QwenAuthModal } from '../settings/QwenAuthModal';
+import { CodexAuthModal } from '../settings/CodexAuthModal';
 import { QueuedMessages } from './QueuedMessages';
 import McpToolsPopover from './McpToolsPopover';
 import { VoiceInputControl } from '../voice/VoiceInputControl';
@@ -87,6 +88,45 @@ function buildCopyContent(msg: ChatMessage): string {
         }
     }
     return sections.join('\n\n') || msg.content;
+}
+
+function formatProfileSummary(profile: { provider: string; model: string; reasoning_effort?: string | null }) {
+    const parts = [profile.provider, profile.model];
+    if (profile.provider === 'CodexCli') {
+        parts.push(profile.reasoning_effort || 'xhigh');
+    }
+    return parts.filter(Boolean).join(' • ');
+}
+
+function formatCliUsageSummary(status?: CliStatus, isCodex?: boolean) {
+    if (isCodex && status?.usage_windows?.length) {
+        return status.usage_windows
+            .map((window: CliUsageWindow) => `${window.label} ${Math.round(window.remaining_percent)}%`)
+            .join(' • ');
+    }
+
+    if (isCodex) {
+        return null;
+    }
+
+    if (status?.usage) {
+        return `${status.usage.requests_used}${status.usage.requests_limit > 0 ? `/${status.usage.requests_limit}` : ''}`;
+    }
+
+    return null;
+}
+
+type ChatCliProvider = 'qwen' | 'codex';
+
+function getCliProviderType(provider: string): ChatCliProvider | null {
+    switch (provider) {
+        case 'QwenCli':
+            return 'qwen';
+        case 'CodexCli':
+            return 'codex';
+        default:
+            return null;
+    }
 }
 
 function DiffSummaryBanner({ content, onApply, onReject, disabled }: { content: string, onApply?: () => void, onReject?: () => void, disabled?: boolean }) {
@@ -203,7 +243,7 @@ export function ChatArea({
     const [input, setInput] = useState('');
     const [showModelDropdown, setShowModelDropdown] = useState(false);
     const [showConfigDropdown, setShowConfigDropdown] = useState(false);
-    const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+    const [authModalProvider, setAuthModalProvider] = useState<ChatCliProvider | null>(null);
     const [cliStatuses, setCliStatuses] = useState<Record<string, CliStatus>>({});
     const [showGetCodeDropdown, setShowGetCodeDropdown] = useState(false);
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -357,23 +397,47 @@ export function ChatArea({
         }
     }, [activeProfileId]);
 
-    // CLI Statuses
-    const fetchCliStatuses = async () => {
-        const activeProfile = profiles.find(p => p.id === activeProfileId);
-        if (activeProfile?.provider !== 'QwenCli') return;
-
+    const fetchCliStatusForProfile = useCallback(async (profileId: string, provider: ChatCliProvider) => {
         try {
-            const status = await cliProvidersApi.getStatus(activeProfile.id, 'qwen');
-            setCliStatuses(prev => ({ ...prev, [activeProfile.id]: status }));
+            const status = await cliProvidersApi.getStatus(profileId, provider);
+            setCliStatuses(prev => ({ ...prev, [profileId]: status }));
         } catch (err) {
-            console.error(`Failed to fetch CLI status for profile ${activeProfile.id}:`, err);
+            console.error(`Failed to fetch CLI status for profile ${profileId} (${provider}):`, err);
         }
-    };
+    }, []);
 
-    // Consolidated CLI status effect
+    const fetchCliStatuses = useCallback(async () => {
+        const cliProfiles = profiles
+            .map(profile => {
+                const cliProvider = getCliProviderType(profile.provider);
+                return cliProvider ? { profileId: profile.id, cliProvider } : null;
+            })
+            .filter((profile): profile is { profileId: string; cliProvider: ChatCliProvider } => profile !== null);
+
+        await Promise.all(cliProfiles.map(profile => fetchCliStatusForProfile(profile.profileId, profile.cliProvider)));
+    }, [fetchCliStatusForProfile, profiles]);
+
     useEffect(() => {
         fetchCliStatuses();
-    }, [activeProfileId]);
+    }, [fetchCliStatuses]);
+
+    const handleCliAuthSuccess = useCallback(async (
+        provider: ChatCliProvider,
+        accessToken: string,
+        refreshToken: string | null,
+        expiresAt: number,
+        resourceUrl: string | null,
+    ) => {
+        const currentProfile = profiles.find(p => p.id === activeProfileId);
+        if (!currentProfile) return;
+
+        try {
+            await cliProvidersApi.saveToken(currentProfile.id, provider, accessToken, refreshToken, expiresAt, resourceUrl);
+            await fetchCliStatuses();
+        } catch {
+            console.error(`[ChatArea] Failed to save ${provider} token`);
+        }
+    }, [activeProfileId, fetchCliStatuses, profiles]);
 
     useEffect(() => {
         const unlisten = listen<OverlayExplainPayload>('open-explain-from-overlay', async (event) => {
@@ -472,9 +536,9 @@ export function ChatArea({
             fetchCliStatuses();
         }
         prevIsLoadingRef.current = isLoading;
-    }, [isLoading]);
+    }, [fetchCliStatuses, isLoading]);
 
-    // Periodic check ONLY for QwenCli
+    // Periodic check for the active CLI provider
     const cliStatusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     useEffect(() => {
         if (cliStatusIntervalRef.current !== null) {
@@ -482,10 +546,13 @@ export function ChatArea({
             cliStatusIntervalRef.current = null;
         }
         const activeProfile = profiles.find(p => p.id === activeProfileId);
-        if (activeProfile?.provider !== 'QwenCli') return;
+        if (!activeProfile) return;
+
+        const cliProvider = getCliProviderType(activeProfile.provider);
+        if (!cliProvider) return;
 
         cliStatusIntervalRef.current = setInterval(() => {
-            fetchCliStatuses();
+            fetchCliStatusForProfile(activeProfile.id, cliProvider);
         }, 60_000);
         return () => {
             if (cliStatusIntervalRef.current !== null) {
@@ -493,7 +560,7 @@ export function ChatArea({
                 cliStatusIntervalRef.current = null;
             }
         };
-    }, [activeProfileId, profiles]);
+    }, [activeProfileId, fetchCliStatusForProfile, profiles]);
 
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1393,12 +1460,12 @@ export function ChatArea({
                                             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Ваши профили</span>
                                         </div>
                                         <div className="max-h-[250px] overflow-y-auto custom-scrollbar">
-                                            {profiles.filter(p => p.provider !== 'QwenCli' && p.provider !== 'OneCNaparnik').length > 0 && (
+                                            {profiles.filter(p => getCliProviderType(p.provider) === null && p.provider !== 'OneCNaparnik').length > 0 && (
                                                 <>
                                                     <div className="px-3 py-1.5 border-b border-[#27272a] mb-1 sticky top-0 bg-[#09090b] z-10">
                                                         <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Стандартные ассистенты</span>
                                                     </div>
-                                                    {profiles.filter(p => p.provider !== 'QwenCli' && p.provider !== 'OneCNaparnik').map(p => (
+                                                    {profiles.filter(p => getCliProviderType(p.provider) === null && p.provider !== 'OneCNaparnik').map(p => (
                                                         <div
                                                             key={p.id}
                                                             className={`group px-3 py-2 flex items-center justify-between cursor-pointer transition-colors ${activeProfileId === p.id ? 'bg-blue-500/10' : 'hover:bg-zinc-800/50'}`}
@@ -1409,29 +1476,35 @@ export function ChatArea({
                                                         >
                                                             <div className="flex flex-col gap-0.5 min-w-0">
                                                                 <span className={`text-[12px] font-semibold truncate ${activeProfileId === p.id ? 'text-blue-400' : 'text-zinc-200'}`}>{p.name}</span>
-                                                                <span className="text-[10px] text-zinc-500 truncate">{p.provider} • {p.model}</span>
+                                                                <span className="text-[10px] text-zinc-500 truncate">{formatProfileSummary(p)}</span>
                                                             </div>
                                                             {activeProfileId === p.id && <Check className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />}
                                                         </div>
                                                     ))}
                                                 </>
                                             )}
-                                            {profiles.filter(p => p.provider === 'QwenCli').length > 0 && (
+                                            {profiles.filter(p => getCliProviderType(p.provider) !== null).length > 0 && (
                                                 <>
                                                     <div className="px-3 py-1.5 border-b border-[#27272a] mt-1 mb-1 sticky top-0 bg-[#09090b] z-10">
-                                                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">CLI Провайдеры (Free)</span>
+                                                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">CLI Провайдеры</span>
                                                     </div>
-                                                    {profiles.filter(p => p.provider === 'QwenCli').map(p => {
+                                                    {profiles.filter(p => getCliProviderType(p.provider) !== null).map(p => {
+                                                        const cliProvider = getCliProviderType(p.provider);
+                                                        if (!cliProvider) return null;
                                                         const status = cliStatuses[p.id];
-                                                        const isAuthenticated = status?.is_authenticated;
+                                                        const isAuthenticated = status?.is_authenticated ?? false;
+                                                        const isCodex = cliProvider === 'codex';
+                                                        const activeRowClass = isCodex ? 'bg-blue-500/10' : 'bg-amber-500/10';
+                                                        const activeTextClass = isCodex ? 'text-blue-400' : 'text-amber-400';
+                                                        const activeCheckClass = isCodex ? 'text-blue-500' : 'text-amber-500';
                                                         return (
                                                             <div
                                                                 key={p.id}
-                                                                className={`group px-3 py-2 flex items-center justify-between cursor-pointer transition-colors ${activeProfileId === p.id ? 'bg-amber-500/10' : 'hover:bg-zinc-800/50'}`}
+                                                                className={`group px-3 py-2 flex items-center justify-between cursor-pointer transition-colors ${activeProfileId === p.id ? activeRowClass : 'hover:bg-zinc-800/50'}`}
                                                                 onClick={() => {
                                                                     if (!isAuthenticated) {
                                                                         setActiveProfile(p.id);
-                                                                        setIsAuthModalOpen(true);
+                                                                        setAuthModalProvider(cliProvider);
                                                                     } else {
                                                                         setActiveProfile(p.id);
                                                                         setShowModelDropdown(false);
@@ -1440,20 +1513,20 @@ export function ChatArea({
                                                             >
                                                                 <div className="flex flex-col gap-0.5 min-w-0">
                                                                     <div className="flex items-center gap-1.5">
-                                                                        <span className={`text-[12px] font-semibold truncate ${activeProfileId === p.id ? 'text-amber-400' : 'text-zinc-200'}`}>{p.name}</span>
+                                                                        <span className={`text-[12px] font-semibold truncate ${activeProfileId === p.id ? activeTextClass : 'text-zinc-200'}`}>{p.name}</span>
                                                                         {!isAuthenticated && <span className="text-[9px] bg-red-500/20 text-red-500 px-1 rounded border border-red-500/20">Login required</span>}
                                                                     </div>
                                                                     <div className="flex items-center gap-2">
-                                                                        <span className="text-[10px] text-zinc-500 truncate">{p.model}</span>
-                                                                        {isAuthenticated && status?.usage && (
+                                                                        <span className="text-[10px] text-zinc-500 truncate">{isCodex ? formatProfileSummary(p) : p.model}</span>
+                                                                        {isAuthenticated && formatCliUsageSummary(status, isCodex) && (
                                                                             <span className="text-[9px] text-zinc-600 font-mono">
-                                                                                {status.usage.requests_used}{status.usage.requests_limit > 0 ? `/${status.usage.requests_limit}` : ''}
+                                                                                {formatCliUsageSummary(status, isCodex)}
                                                                             </span>
                                                                         )}
                                                                     </div>
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
-                                                                    {activeProfileId === p.id && <Check className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
+                                                                    {activeProfileId === p.id && <Check className={`w-3.5 h-3.5 ${activeCheckClass} flex-shrink-0`} />}
                                                                     <Terminal className="w-3 h-3 text-zinc-700" />
                                                                 </div>
                                                             </div>
@@ -1634,25 +1707,29 @@ export function ChatArea({
                 </div>
             </div>
 
-            {isAuthModalOpen && (
+            {authModalProvider === 'qwen' && (
                 <QwenAuthModal
-                    isOpen={isAuthModalOpen}
+                    isOpen={true}
                     onClose={() => {
-                        setIsAuthModalOpen(false);
+                        setAuthModalProvider(null);
                         fetchCliStatuses();
                     }}
-                    onSuccess={async (access_token, refresh_token, expires_at, resource_url) => {
-                        console.log('[DEBUG] ChatArea: Qwen Auth Success, saving token...');
-                        const currentProfile = profiles.find(p => p.id === activeProfileId);
-                        if (!currentProfile) return;
-                        try {
-                            await cliProvidersApi.saveToken(currentProfile.id, 'qwen', access_token, refresh_token, expires_at, resource_url);
-                            console.log('[DEBUG] ChatArea: Token saved successfully');
-                            await fetchCliStatuses();
-                        } catch (err) {
-                            console.error('[DEBUG] ChatArea: Failed to save token:', err);
-                        }
+                    onSuccess={(access_token, refresh_token, expires_at, resource_url) =>
+                        handleCliAuthSuccess('qwen', access_token, refresh_token, expires_at, resource_url)
+                    }
+                />
+            )}
+
+            {authModalProvider === 'codex' && (
+                <CodexAuthModal
+                    isOpen={true}
+                    onClose={() => {
+                        setAuthModalProvider(null);
+                        fetchCliStatuses();
                     }}
+                    onSuccess={(access_token, refresh_token, expires_at, resource_url) =>
+                        handleCliAuthSuccess('codex', access_token, refresh_token, expires_at, resource_url)
+                    }
                 />
             )}
         </div >

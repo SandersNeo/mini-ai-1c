@@ -17,6 +17,17 @@ function generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
+function createEmptySession(id: string = generateId()): ChatSession {
+    const now = Date.now();
+    return {
+        id,
+        title: 'Новый чат',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+    };
+}
+
 function getTitle(messages: ChatMessage[]): string {
     const first = messages.find(m => m.role === 'user');
     if (!first) return 'Новый чат';
@@ -63,8 +74,8 @@ export function useChatSessions() {
             const updated = [newSession, ...prev];
             return updated.length > MAX_SESSIONS ? updated.slice(0, MAX_SESSIONS) : updated;
         });
-        setActiveId(id);
-        return id;
+        setActiveId(newSession.id);
+        return newSession.id;
     }, []);
 
     const switchSession = useCallback((id: string) => {
