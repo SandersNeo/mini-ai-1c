@@ -294,6 +294,7 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                 transport: 'stdio',
                 command: 'npx',
                 args: ['--yes', 'tsx', 'src/mcp-servers/1c-help.ts'],
+                env: { 'ONEC_HELP_PATH': '' },
             });
             needsUpdate = true;
         } else {
@@ -742,6 +743,7 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                                                     const helpSt = status?.help_status || '';
                                                     const prog = status?.index_progress || 0;
                                                     const msg = status?.index_message || '';
+                                                    const helpPath = server.env?.['ONEC_HELP_PATH'] || '';
                                                     // Парсим index_message: "Готово: 52064 тем (платформа 8.3.27.1989)"
                                                     let helpVersion = ''; let helpCount = '';
                                                     if (helpSt === 'ready') {
@@ -750,6 +752,17 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                                                         helpCount = countMatch?.[1]?.trim() || '';
                                                         helpVersion = versionMatch?.[1]?.trim() || '';
                                                     }
+                                                    const browseHelpDir = async () => {
+                                                        try {
+                                                            const dir = await open({ directory: true, multiple: false, title: 'Выберите папку установки 1С:Предприятие (содержит папки вида 8.x.x.x)' });
+                                                            if (dir && typeof dir === 'string') {
+                                                                const newEnv = { ...(server.env || {}), 'ONEC_HELP_PATH': dir };
+                                                                handleUpdateServer(server.id, { env: newEnv });
+                                                            }
+                                                        } catch (e) {
+                                                            console.error('Failed to open directory dialog:', e);
+                                                        }
+                                                    };
                                                     const handleReindex = async () => {
                                                         try {
                                                             setStatuses(prev => ({
@@ -766,38 +779,78 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                                                             setTimeout(fetchStatuses, 500);
                                                         } catch { /* UI обновится через статус */ }
                                                     };
+                                                    const pathField = (
+                                                        <div className="space-y-1">
+                                                            <label className="text-[10px] text-zinc-500 font-medium uppercase tracking-wide">
+                                                                Путь к платформе 1С
+                                                            </label>
+                                                            <div className="flex gap-1.5">
+                                                                <input
+                                                                    type="text"
+                                                                    value={helpPath}
+                                                                    onChange={(e) => {
+                                                                        const newEnv = { ...(server.env || {}), 'ONEC_HELP_PATH': e.target.value };
+                                                                        handleUpdateServer(server.id, { env: newEnv });
+                                                                    }}
+                                                                    placeholder="Авто: C:\Program Files\1cv8"
+                                                                    className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 font-mono min-w-0"
+                                                                />
+                                                                <button
+                                                                    onClick={() => void browseHelpDir()}
+                                                                    className="px-2.5 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-lg text-xs transition shrink-0"
+                                                                    title="Выбрать папку"
+                                                                >
+                                                                    <FolderOpen className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
+                                                            <p className="text-[10px] text-zinc-600">
+                                                                Оставьте пустым для автоопределения. Укажите родительскую папку, содержащую подпапки вида <span className="font-mono">8.x.x.x\bin</span>
+                                                            </p>
+                                                        </div>
+                                                    );
                                                     if (helpSt === 'unavailable') {
                                                         return (
-                                                            <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 flex items-start gap-3">
-                                                                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                                                                <div>
-                                                                    <p className="text-xs text-amber-300 font-medium">Платформа 1С:Предприятие не найдена</p>
-                                                                    <p className="text-[10px] text-zinc-500 mt-1">Установите 1С:Предприятие 8.3 для использования справки.</p>
+                                                            <div className="space-y-3">
+                                                                {pathField}
+                                                                <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 flex items-start gap-3">
+                                                                    <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                                                                    <div>
+                                                                        <p className="text-xs text-amber-300 font-medium">Платформа 1С:Предприятие не найдена</p>
+                                                                        <p className="text-[10px] text-zinc-500 mt-1">
+                                                                            {helpPath
+                                                                                ? `Платформа не обнаружена по пути: ${helpPath}`
+                                                                                : 'Установите 1С:Предприятие 8.3 или укажите путь установки вручную выше.'}
+                                                                        </p>
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                         );
                                                     } else if (helpSt === 'indexing') {
                                                         return (
-                                                            <div className="space-y-2">
-                                                                <div className="flex items-center justify-between text-[10px] text-zinc-400">
-                                                                    <span className="flex items-center gap-1">
-                                                                        <Activity className="w-3 h-3 animate-pulse text-blue-400" />
-                                                                        Подготовка базы данных справки...
-                                                                    </span>
-                                                                    <span className="font-mono text-blue-400">{prog}%</span>
+                                                            <div className="space-y-3">
+                                                                {pathField}
+                                                                <div className="space-y-2">
+                                                                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                                                                        <span className="flex items-center gap-1">
+                                                                            <Activity className="w-3 h-3 animate-pulse text-blue-400" />
+                                                                            Подготовка базы данных справки...
+                                                                        </span>
+                                                                        <span className="font-mono text-blue-400">{prog}%</span>
+                                                                    </div>
+                                                                    <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                                                                        <div
+                                                                            className="bg-gradient-to-r from-blue-600 to-blue-400 h-1.5 rounded-full transition-all duration-500"
+                                                                            style={{ width: `${Math.max(2, prog)}%` }}
+                                                                        />
+                                                                    </div>
+                                                                    {msg && <p className="text-[10px] text-zinc-500 truncate">{msg}</p>}
                                                                 </div>
-                                                                <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                                                                    <div
-                                                                        className="bg-gradient-to-r from-blue-600 to-blue-400 h-1.5 rounded-full transition-all duration-500"
-                                                                        style={{ width: `${Math.max(2, prog)}%` }}
-                                                                    />
-                                                                </div>
-                                                                {msg && <p className="text-[10px] text-zinc-500 truncate">{msg}</p>}
                                                             </div>
                                                         );
                                                     } else if (helpSt === 'ready') {
                                                         return (
-                                                            <div className="space-y-2">
+                                                            <div className="space-y-3">
+                                                                {pathField}
                                                                 <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-3 flex items-center justify-between">
                                                                     <div className="flex items-start gap-3">
                                                                         <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0 mt-0.5" />
@@ -821,9 +874,12 @@ export function MCPSettings({ servers, bslEnabled, onUpdate }: MCPSettingsProps)
                                                         );
                                                     } else {
                                                         return (
-                                                            <div className="bg-zinc-900/50 border border-yellow-500/10 rounded-lg p-3 text-xs text-zinc-400 italic">
-                                                                Поиск по официальной справке платформы 1С:Предприятие 8.3.
-                                                                При первом включении индексация займёт 1-3 минуты.
+                                                            <div className="space-y-3">
+                                                                {pathField}
+                                                                <div className="bg-zinc-900/50 border border-yellow-500/10 rounded-lg p-3 text-xs text-zinc-400 italic">
+                                                                    Поиск по официальной справке платформы 1С:Предприятие 8.3.
+                                                                    При первом включении индексация займёт 1-3 минуты.
+                                                                </div>
                                                             </div>
                                                         );
                                                     }

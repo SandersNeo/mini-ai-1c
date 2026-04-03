@@ -38,22 +38,32 @@ interface PlatformInfo {
 }
 
 /**
- * Ищет установленные версии платформы 1С в стандартных путях.
+ * Ищет установленные версии платформы 1С.
+ * Если задан ONEC_HELP_PATH — использует его как единственный путь поиска.
+ * Иначе — стандартные пути установки 1С:Предприятие.
  * Возвращает последнюю по семантической версии.
  */
 function findPlatform(): PlatformInfo | null {
+    const customPath = process.env.ONEC_HELP_PATH?.trim();
+
     const { platform } = process;
 
-    const searchPaths = platform === 'win32'
-        ? [
-            'C:\\Program Files\\1cv8',
-            'C:\\Program Files (x86)\\1cv8',
-        ]
-        : [
-            '/opt/1cv8',
-            '/opt/1cv8/x86_64',
-            '/usr/share/1cv8',
-        ];
+    const searchPaths = customPath
+        ? [customPath]
+        : platform === 'win32'
+            ? [
+                'C:\\Program Files\\1cv8',
+                'C:\\Program Files (x86)\\1cv8',
+            ]
+            : [
+                '/opt/1cv8',
+                '/opt/1cv8/x86_64',
+                '/usr/share/1cv8',
+            ];
+
+    if (customPath) {
+        log(`Используется пользовательский путь к платформе: ${customPath}`);
+    }
 
     const platforms: PlatformInfo[] = [];
 
@@ -456,8 +466,14 @@ async function main() {
     const platform = findPlatform();
 
     if (!platform) {
-        reportStatus('unavailable:1C Platform not found in standard paths');
-        log('Платформа 1С не найдена. Проверьте установку 1С:Предприятие 8.3.');
+        const customPath = process.env.ONEC_HELP_PATH?.trim();
+        if (customPath) {
+            reportStatus(`unavailable:1C Platform not found at custom path: ${customPath}`);
+            log(`Платформа 1С не найдена по указанному пути: ${customPath}. Проверьте правильность пути (должна быть папка с подпапками вида 8.x.x.x/bin/shcntx_ru.hbk).`);
+        } else {
+            reportStatus('unavailable:1C Platform not found in standard paths');
+            log('Платформа 1С не найдена в стандартных путях. Установите 1С:Предприятие 8.3 или укажите путь вручную в настройках MCP.');
+        }
         // Запускаем MCP сервер в «спящем» режиме — инструменты сообщат о проблеме
         const transport = new StdioServerTransport();
         await server.connect(transport);

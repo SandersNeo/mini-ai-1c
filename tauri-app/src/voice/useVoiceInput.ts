@@ -2,6 +2,11 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { MicActivityMonitor } from './micActivity';
 import { speechService } from './speechRecognition';
 
+function hookLog(level: 'info' | 'warn' | 'error', ...args: unknown[]) {
+    const ts = new Date().toISOString().slice(11, 23);
+    console[level]('[VoiceInput:hook]', `[${ts}]`, ...args);
+}
+
 export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: number | null) {
     const [isRecording, setIsRecording] = useState(false);
     const [permissionState, setPermissionState] = useState<PermissionState | 'unknown'>('unknown');
@@ -19,11 +24,17 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
         try {
             if (navigator.permissions && navigator.permissions.query) {
                 const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+                hookLog('info', 'Разрешение микрофона', { state: result.state });
                 setPermissionState(result.state);
-                result.onchange = () => setPermissionState(result.state);
+                result.onchange = () => {
+                    hookLog('info', 'Разрешение микрофона изменилось', { state: result.state });
+                    setPermissionState(result.state);
+                };
+            } else {
+                hookLog('warn', 'Permissions API недоступен для microphone');
             }
         } catch (permissionError) {
-            console.warn('Permissions API not supported for microphone', permissionError);
+            hookLog('warn', 'Ошибка запроса разрешения микрофона', { error: permissionError });
         }
     }, []);
 
@@ -46,6 +57,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
 
     const startMicMonitoring = useCallback(async () => {
         if (!navigator.mediaDevices?.getUserMedia) {
+            hookLog('warn', 'navigator.mediaDevices.getUserMedia недоступен — мониторинг микрофона отключён');
             setIsMicMonitoringAvailable(false);
             return;
         }
@@ -56,6 +68,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
         micMonitorRef.current = monitor;
 
         try {
+            hookLog('info', 'Запуск мониторинга активности микрофона...');
             await monitor.start(({ level, hasSignal }) => {
                 if (micMonitorRef.current !== monitor) {
                     return;
@@ -65,6 +78,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
                 setHasMicSignal(prev => (prev === hasSignal ? prev : hasSignal));
                 setIsMicMonitoringAvailable(true);
             });
+            hookLog('info', 'Мониторинг микрофона запущен успешно');
         } catch (monitorError) {
             if (micMonitorRef.current === monitor) {
                 micMonitorRef.current = null;
@@ -73,7 +87,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
             setMicLevel(0);
             setHasMicSignal(false);
             setIsMicMonitoringAvailable(false);
-            console.warn('Microphone activity monitor is unavailable:', monitorError);
+            hookLog('warn', 'Мониторинг микрофона недоступен', { error: monitorError });
         }
     }, [stopMicMonitoring]);
 
@@ -112,18 +126,27 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
 
     const toggleRecording = useCallback(async () => {
         if (isStoppingRef.current) {
+            hookLog('info', 'toggleRecording — пропускаем, isStoppingRef=true');
             return;
         }
 
         if (isRecording) {
+            hookLog('info', 'toggleRecording — остановка записи');
             isStoppingRef.current = true;
             setIsRecording(false);
             void stopMicMonitoring();
             if (!speechService.stop()) {
+                hookLog('warn', 'speechService.stop() вернул false — вызываем finishRecording напрямую');
                 void finishRecording();
             }
             return;
         }
+
+        hookLog('info', 'toggleRecording — запуск записи', {
+            sessionId: sessionIdRef.current + 1,
+            isSupported: speechService.isSupported(),
+            permissionState,
+        });
 
         await checkPermission();
         setError(null);
@@ -152,6 +175,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
                             ? rawError.message
                             : rawError?.message || 'voice-error';
 
+                hookLog('error', 'Ошибка голосового ввода', { rawError, normalizedError, sessionId });
                 setError(normalizedError);
                 void finishRecording();
                 void checkPermission();
@@ -161,11 +185,15 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
                     return;
                 }
 
+                hookLog('info', 'Сессия завершена (onEnd callback)', { sessionId });
                 void finishRecording();
             },
         );
 
+        hookLog('info', 'speechService.start() вернул', { didStart, sessionId });
+
         if (!didStart) {
+            hookLog('error', 'Запуск голосового ввода не удался (didStart=false)', { sessionId });
             return;
         }
 
@@ -175,6 +203,7 @@ export function useVoiceInput(onText: (text: string) => void, _selectedHwnd: num
         checkPermission,
         finishRecording,
         isRecording,
+        permissionState,
         processResult,
         resetTranscriptState,
         startMicMonitoring,
