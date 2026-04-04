@@ -887,12 +887,18 @@ pub async fn compact_context(messages_json: String) -> Result<String, String> {
         },
     ];
 
-    // Only standard OpenAI-compatible providers are supported for summarization
+    // Only standard OpenAI-compatible HTTP providers support summarization.
+    // CodexCli / QwenCli use CLI tools, not HTTP; OneCNaparnik uses proprietary API.
     if matches!(
         profile.provider,
-        crate::llm_profiles::LLMProvider::QwenCli | crate::llm_profiles::LLMProvider::OneCNaparnik
+        crate::llm_profiles::LLMProvider::CodexCli
+            | crate::llm_profiles::LLMProvider::QwenCli
+            | crate::llm_profiles::LLMProvider::OneCNaparnik
     ) {
-        return Err("Суммаризация не поддерживается для этого провайдера (QwenCli / 1С:Напарник). Используйте стратегию 'sliding_window'.".to_string());
+        return Err(format!(
+            "Суммаризация не поддерживается для провайдера {:?}. Используйте стратегию 'sliding_window'.",
+            profile.provider
+        ));
     }
 
     let api_key = crate::ai::client::resolve_profile_api_key(&profile)?;
