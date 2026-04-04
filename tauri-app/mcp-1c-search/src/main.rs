@@ -42,12 +42,15 @@ async fn main() {
             // Emit preliminary ready immediately so the event loop can start.
             // Background task below will emit an updated status with actual counts.
             eprintln!("SEARCH_STATUS:ready:0:0.00");
+            eprintln!("SEARCH_STATUS_JSON:{{\"state\":\"bootstrapping\",\"progress\":0,\"message\":\"Инициализация...\",\"sym_count\":0,\"db_size_mb\":0.0,\"built_at_unix\":0}}");
         }
         None => {
             if config_path_str.is_empty() {
                 eprintln!("SEARCH_STATUS:unavailable:Путь к конфигурации не задан");
+                eprintln!("SEARCH_STATUS_JSON:{{\"state\":\"unavailable\",\"progress\":0,\"message\":\"Путь к конфигурации не задан\",\"sym_count\":0,\"db_size_mb\":0.0,\"built_at_unix\":0}}");
             } else {
                 eprintln!("SEARCH_STATUS:unavailable:Директория не найдена: {}", config_path_str);
+                eprintln!("SEARCH_STATUS_JSON:{{\"state\":\"unavailable\",\"progress\":0,\"message\":\"Директория не найдена: {}\",\"sym_count\":0,\"db_size_mb\":0.0,\"built_at_unix\":0}}", config_path_str);
             }
         }
     }
@@ -93,12 +96,17 @@ async fn main() {
                             "SEARCH_STATUS:ready:{}:{:.2}:{}",
                             stats.total_symbols, size, built_at
                         );
+                        eprintln!(
+                            "SEARCH_STATUS_JSON:{{\"state\":\"ready\",\"progress\":100,\"message\":\"Индекс готов\",\"sym_count\":{},\"db_size_mb\":{:.2},\"built_at_unix\":{}}}",
+                            stats.total_symbols, size, built_at
+                        );
                     }
                     Err(e) => eprintln!("[1c-search] Sync error: {}", e),
                 }
             } else {
                 // ─── Full build ─────────────────────────────────────────────
                 eprintln!("[1c-search] No index found — starting full build...");
+                eprintln!("SEARCH_STATUS_JSON:{{\"state\":\"building_index\",\"progress\":0,\"message\":\"Первичная индексация...\",\"sym_count\":0,\"db_size_mb\":0.0,\"built_at_unix\":0}}");
                 match index::build_index(&root, &db_for_index) {
                     Ok(sym_count) => {
                         let size = db_size_mb(&db_for_index);
@@ -107,9 +115,14 @@ async fn main() {
                             "SEARCH_STATUS:ready:{}:{:.2}:{}",
                             sym_count, size, built_at
                         );
+                        eprintln!(
+                            "SEARCH_STATUS_JSON:{{\"state\":\"ready\",\"progress\":100,\"message\":\"Индекс построен\",\"sym_count\":{},\"db_size_mb\":{:.2},\"built_at_unix\":{}}}",
+                            sym_count, size, built_at
+                        );
                     }
                     Err(e) => {
                         eprintln!("SEARCH_STATUS:unavailable:Ошибка индексации: {}", e);
+                        eprintln!("SEARCH_STATUS_JSON:{{\"state\":\"unavailable\",\"progress\":0,\"message\":\"Ошибка индексации: {}\",\"sym_count\":0,\"db_size_mb\":0.0,\"built_at_unix\":0}}", e);
                     }
                 }
             }
