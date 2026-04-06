@@ -53,7 +53,7 @@ function extractConfigName(title: string | null | undefined): string | null {
     }
 
     const fallback = parseConfiguratorTitle(sanitizedTitle).trim();
-    if (!fallback || fallback === 'Конфигуратор') {
+    if (!fallback || fallback === 'Конфигуратор' || fallback === 'Configurator') {
         return null;
     }
     return fallback;

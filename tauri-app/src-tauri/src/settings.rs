@@ -12,11 +12,13 @@ fn default_true() -> bool {
 }
 
 fn default_configurator_window_title_pattern() -> String {
-    "Конфигуратор".to_string()
+    "Конфигуратор|Configurator".to_string()
 }
 
 fn is_default_configurator_window_title_pattern(value: &String) -> bool {
-    value.trim().is_empty() || value == &default_configurator_window_title_pattern()
+    value.trim().is_empty()
+        || value == "Конфигуратор"
+        || value == &default_configurator_window_title_pattern()
 }
 
 fn default_addition_marker() -> String {
@@ -578,6 +580,13 @@ pub fn load_settings() -> AppSettings {
                 }
             }
         }
+    }
+
+    // Migration: upgrade old single-language window_title_pattern to bilingual default
+    if settings.configurator.window_title_pattern == "Конфигуратор" {
+        crate::app_log!("[SETTINGS] Migrating window_title_pattern to bilingual default");
+        settings.configurator.window_title_pattern = default_configurator_window_title_pattern();
+        modified = true;
     }
 
     // Migration: Force 'Diff' mode over 'Full' if detected (to fix AI interaction issues)

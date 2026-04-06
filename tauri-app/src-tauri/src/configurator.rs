@@ -374,8 +374,12 @@ pub fn find_configurator_windows(pattern: &str) -> Vec<WindowInfo> {
         windows.clear();
     }
 
-    // Store pattern for callback
-    let pattern_lower = pattern.to_lowercase();
+    // Support "|"-separated patterns for multi-language matching (e.g. "Конфигуратор|Configurator")
+    let patterns: Vec<String> = pattern
+        .split('|')
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect();
 
     unsafe {
         let _ = EnumWindows(
@@ -384,11 +388,14 @@ pub fn find_configurator_windows(pattern: &str) -> Vec<WindowInfo> {
         );
     }
 
-    // Filter by pattern
+    // Filter by any of the patterns
     if let Ok(windows) = FOUND_WINDOWS.lock() {
         windows
             .iter()
-            .filter(|w| w.title.to_lowercase().contains(&pattern_lower))
+            .filter(|w| {
+                let title_lower = w.title.to_lowercase();
+                patterns.iter().any(|p| title_lower.contains(p.as_str()))
+            })
             .cloned()
             .collect()
     } else {
