@@ -1140,8 +1140,29 @@ async fn handle_get_object_structure(
                 text.push('\n');
             }
             if !d.forms.is_empty() {
+                // Build folder prefix to check for form modules in filesystem
+                let folder_prefix = object_type_to_folder(d.obj_type.as_str())
+                    .map(|f| format!("{}/{}", f, d.name));
                 text.push_str(&format!("### Формы ({})\n", d.forms.len()));
-                for form in &d.forms { text.push_str(&format!("- {}\n", form)); }
+                for form in &d.forms {
+                    // Check if form module file exists on disk
+                    let form_has_module = folder_prefix.as_deref()
+                        .and_then(|prefix| config_path.as_ref().map(|root| {
+                            root.join(prefix).join("Forms").join(form)
+                                .join("Ext").join("Form").join("Module.bsl").exists()
+                        }))
+                        .unwrap_or(false);
+                    if form_has_module {
+                        let mod_path = format!(
+                            "{}/Forms/{}/Ext/Form/Module.bsl",
+                            folder_prefix.as_deref().unwrap_or(""),
+                            form
+                        );
+                        text.push_str(&format!("- **{}** — есть модуль: `get_module_functions` с `module_path=\"{}\"`\n", form, mod_path));
+                    } else {
+                        text.push_str(&format!("- {}\n", form));
+                    }
+                }
                 text.push('\n');
             }
             if !d.commands.is_empty() {
@@ -1150,19 +1171,38 @@ async fn handle_get_object_structure(
                 text.push('\n');
             }
             if !d.modules.is_empty() {
+                // d.modules contains bare names like "ObjectModule", "ManagerModule" from XML metadata.
+                // Build full path: Documents/БольничныйЛист/Ext/ObjectModule.bsl
+                let folder_prefix = object_type_to_folder(d.obj_type.as_str())
+                    .map(|f| format!("{}/{}", f, d.name));
                 text.push_str(&format!("### Модули ({})\n", d.modules.len()));
-                for m in &d.modules { text.push_str(&format!("- {}\n", m)); }
+                for m in &d.modules {
+                    let full_path = folder_prefix.as_deref()
+                        .map(|prefix| format!("{}/Ext/{}.bsl", prefix, m))
+                        .unwrap_or_else(|| m.clone());
+                    text.push_str(&format!("- `{}` → `get_module_functions` с `module_path=\"{}\"`\n", m, full_path));
+                }
                 text.push('\n');
             }
+            // When forms/modules are missing from the index (XML metadata may not list them),
+            // supplement from the filesystem so AI gets correct module paths.
+            let fs_fallback = if d.forms.is_empty() && d.modules.is_empty() {
+                scan_object_folder_fallback(&d.obj_type, &d.name, config_path)
+            } else {
+                None
+            };
+            if let Some(ref fallback_text) = fs_fallback {
+                text.push_str(fallback_text);
+            }
+
             if d.attributes.is_empty()
                 && d.tabular_sections.is_empty()
                 && d.forms.is_empty()
                 && d.commands.is_empty()
                 && d.modules.is_empty()
             {
-                if let Some(fallback) = scan_object_folder_fallback(&d.obj_type, &d.name, config_path) {
-                    text.push_str("*Структурные данные получены из файловой системы.*\n\n");
-                    text.push_str(&fallback);
+                if fs_fallback.is_some() {
+                    // Already printed above
                 } else {
                     // Check if any objects of this type have source files in the dump
                     let type_folder_has_files = config_path.as_ref()
@@ -1334,7 +1374,9 @@ fn scan_object_folder_fallback(
             .map(|e| e.path())?
     };
 
-    let mut forms: Vec<String> = Vec::new();
+    // forms: Vec<(name, has_module)>
+    let mut forms: Vec<(String, bool)> = Vec::new();
+    // modules: Vec<full relative path like "Ext/ObjectModule.bsl">
     let mut modules: Vec<String> = Vec::new();
     let mut templates: Vec<String> = Vec::new();
     let mut commands: Vec<String> = Vec::new();
@@ -1346,10 +1388,33 @@ fn scan_object_folder_fallback(
             let path = entry.path();
             if path.is_dir() {
                 match name.as_str() {
-                    "Forms"     => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { forms.push(n); } } } }
-                    "Templates" => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { templates.push(n); } } } }
-                    "Commands"  => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { commands.push(n); } } } }
-                    "Ext"       => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { modules.push(n); } } } }
+                    "Forms" => {
+                        if let Ok(es) = std::fs::read_dir(&path) {
+                            for e in es.flatten() {
+                                // Only directories are forms; .xml and other files are metadata
+                                if !e.path().is_dir() { continue; }
+                                let form_name = e.file_name().to_string_lossy().to_string();
+                                if form_name.starts_with('.') { continue; }
+                                // Check if form has a module: Forms/<FormName>/Ext/Form/Module.bsl
+                                let form_module = e.path()
+                                    .join("Ext").join("Form").join("Module.bsl");
+                                forms.push((form_name, form_module.exists()));
+                            }
+                        }
+                    }
+                    "Templates" => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { if !e.path().is_dir() { continue; } let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { templates.push(n); } } } }
+                    "Commands"  => { if let Ok(es) = std::fs::read_dir(&path) { for e in es.flatten() { if !e.path().is_dir() { continue; } let n = e.file_name().to_string_lossy().to_string(); if !n.starts_with('.') { commands.push(n); } } } }
+                    "Ext" => {
+                        if let Ok(es) = std::fs::read_dir(&path) {
+                            for e in es.flatten() {
+                                let n = e.file_name().to_string_lossy().to_string();
+                                if !n.starts_with('.') && n.to_lowercase().ends_with(".bsl") {
+                                    // Store with "Ext/" prefix so get_module_functions LIKE matches correctly
+                                    modules.push(format!("Ext/{}", n));
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             } else if name == "Module.bsl" {
@@ -1367,12 +1432,23 @@ fn scan_object_folder_fallback(
     }
     if !modules.is_empty() {
         out.push_str(&format!("### Модули ({})\n", modules.len()));
-        for m in &modules { out.push_str(&format!("- {m}\n")); }
+        for m in &modules {
+            // Full path for get_module_functions: Documents/БольничныйЛист/Ext/ManagerModule.bsl
+            let full = format!("{}/{}/{}", folder_type, obj_name, m);
+            out.push_str(&format!("- `{}` → `get_module_functions` с `module_path=\"{}\"`\n", m, full));
+        }
         out.push('\n');
     }
     if !forms.is_empty() {
         out.push_str(&format!("### Формы ({})\n", forms.len()));
-        for f in &forms { out.push_str(&format!("- {f}\n")); }
+        for (f, has_mod) in &forms {
+            if *has_mod {
+                let mod_path = format!("{}/{}/Forms/{}/Ext/Form/Module.bsl", folder_type, obj_name, f);
+                out.push_str(&format!("- **{}** — есть модуль: `get_module_functions` с `module_path=\"{}\"`\n", f, mod_path));
+            } else {
+                out.push_str(&format!("- {}\n", f));
+            }
+        }
         out.push('\n');
     }
     if !commands.is_empty() {
