@@ -599,11 +599,11 @@ pub fn semantic_search(
         // BM25 in SQLite FTS5: negative, lower = better match → invert
         let bm25_norm = 1.0 / (1.0 + (-c.bm25_score).max(0.0));
 
-        // Call popularity boost (logarithmic)
-        let call_weight = 1.0 + (1.0 + c.call_count as f64).ln() * 0.3;
+        // Call popularity boost (logarithmic, capped to ~2.4x for 3000 calls)
+        let call_weight = 1.0 + (1.0 + c.call_count as f64).ln() * 0.15;
 
-        // Caller diversity boost
-        let diversity_weight = 1.0 + c.caller_diversity as f64 * 0.05;
+        // Caller diversity boost (logarithmic, capped to ~1.7x for 100 unique callers)
+        let diversity_weight = 1.0 + (1.0 + c.caller_diversity as f64).ln() * 0.15;
 
         // Domain boost: does the file path contain any context object token?
         let domain_weight = if domain_tokens.is_empty() {
