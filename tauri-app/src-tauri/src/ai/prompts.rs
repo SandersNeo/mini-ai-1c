@@ -319,6 +319,9 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
             prompt.push_str("   - ОБЯЗАТЕЛЬНО: перед внесением исправлений СНАЧАЛА вызови `check_bsl_syntax` для получения актуального анализа кода.\n");
             prompt.push_str("   - В этом режиме исправляй ВСЕ указанные пользователем проблемы, включая Legacy-код.\n");
             prompt.push_str("   - НЕ отказывайся со ссылкой на правила Legacy — пользователь осознанно просит изменения.\n");
+            prompt.push_str("   - ИСКЛЮЧЕНИЕ — `=== SELECTIVE BSL FIX SCOPE ===`: если пользователь прислал этот маркер, он явно ограничил объём исправления выбранным subset диагностик.\n");
+            prompt.push_str("   - При `=== SELECTIVE BSL FIX SCOPE ===` НЕ вызывай `check_bsl_syntax` до внесения правок и исправляй только явно перечисленные выбранные диагностики.\n");
+            prompt.push_str("   - При `=== SELECTIVE BSL FIX SCOPE ===` после правок `check_bsl_syntax` допустим только для самопроверки изменённых строк.\n");
         }
 
         if available_tools
@@ -473,4 +476,55 @@ pub fn get_system_prompt(available_tools: &[ToolInfo], messages: &[ApiMessage]) 
     }
 
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::models::{Tool, ToolFunction};
+    use serde_json::json;
+
+    fn make_user_message(content: &str) -> ApiMessage {
+        ApiMessage {
+            role: "user".to_string(),
+            content: Some(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    fn make_check_bsl_tool() -> ToolInfo {
+        ToolInfo {
+            tool: Tool {
+                r#type: "function".to_string(),
+                function: ToolFunction {
+                    name: "check_bsl_syntax".to_string(),
+                    description: "Проверить BSL-код".to_string(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["code"]
+                    }),
+                },
+            },
+            server_id: "bsl-ls".to_string(),
+        }
+    }
+
+    #[test]
+    fn system_prompt_describes_strict_rule_for_selective_fix_scope() {
+        let prompt = get_system_prompt(
+            &[make_check_bsl_tool()],
+            &[make_user_message("/исправить")],
+        );
+
+        assert!(prompt.contains("=== SELECTIVE BSL FIX SCOPE ==="));
+        assert!(prompt.contains("НЕ вызывай `check_bsl_syntax` до внесения правок"));
+        assert!(prompt.contains("исправляй только явно перечисленные выбранные диагностики"));
+    }
 }

@@ -390,6 +390,33 @@ export function MainLayout() {
     };
     const close = () => appWindow?.close();
 
+    useEffect(() => {
+        (window as any).__MINI_AI_LAYOUT_TEST__ = {
+            setDiagnosticsState: (payload: {
+                diagnostics?: any[];
+                selectedDiagnostics?: any[] | null;
+            }) => {
+                if (payload.diagnostics !== undefined) {
+                    setDiagnostics(payload.diagnostics);
+                }
+                if (Object.prototype.hasOwnProperty.call(payload, 'selectedDiagnostics')) {
+                    setSelectedDiagnostics(payload.selectedDiagnostics ?? null);
+                }
+            },
+            getDiagnosticsState: () => ({
+                diagnostics,
+                selectedDiagnostics,
+                viewMode,
+                baselineCode: uiBaselineCode,
+                modifiedCode,
+            }),
+        };
+
+        return () => {
+            delete (window as any).__MINI_AI_LAYOUT_TEST__;
+        };
+    }, [diagnostics, modifiedCode, selectedDiagnostics, uiBaselineCode, viewMode]);
+
     return (
         <div className="flex flex-col h-screen bg-transparent relative overflow-hidden">
             <SettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} initialTab={settingsTab as any} />

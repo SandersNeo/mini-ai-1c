@@ -934,18 +934,18 @@ export function hasDiffBlocks(content: string): boolean {
 
 /** Проверяет, можно ли применить хотя бы один дифф-блок к исходному коду */
 export function hasApplicableDiffBlocks(originalCode: string, content: string): boolean {
-    if (!originalCode) return false;
     const blocks = parseDiffBlocks(content);
     if (blocks.length === 0) return false;
 
-    const test = originalCode.replace(/\r\n/g, '\n');
-    return blocks.some(block => {
-        const ns = block.search.replace(/\r\n/g, '\n');
-        if (test.includes(ns)) return true;
-        const looseS = ns.split('\n').map(l => l.trim()).join('\n');
-        const looseO = test.split('\n').map(l => l.trim()).join('\n');
-        return looseO.includes(looseS);
-    });
+    if (!originalCode) {
+        return blocks.some(block =>
+            block.search.replace(/\r\n/g, '\n') !== block.replace.replace(/\r\n/g, '\n')
+        );
+    }
+
+    const normalizedOriginalCode = originalCode.replace(/\r\n/g, '\n');
+    const result = applyDiffWithDiagnostics(normalizedOriginalCode, blocks);
+    return result.code.replace(/\r\n/g, '\n') !== normalizedOriginalCode;
 }
 
 /** Очищает сообщение от технических блоков diff */

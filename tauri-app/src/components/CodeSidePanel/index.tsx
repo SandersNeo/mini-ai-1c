@@ -37,7 +37,8 @@ export function CodeSidePanel({
     // When diagnostics list changes, reset selection to all-selected
     useEffect(() => {
         setSelectedDiagnosticKeys(new Set(diagnostics.map(diagnosticKey)));
-    }, [diagnostics]);
+        onDiagnosticSelectionChange?.(diagnostics);
+    }, [diagnostics, onDiagnosticSelectionChange]);
     const { settings } = useSettings();
     const monacoTheme = settings?.theme === 'light' ? 'vs' : 'vs-dark';
     const isLightTheme = settings?.theme === 'light';

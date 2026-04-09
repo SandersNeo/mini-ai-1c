@@ -24,6 +24,8 @@ import { QueuedMessages } from './QueuedMessages';
 import McpToolsPopover from './McpToolsPopover';
 import { VoiceInputControl } from '../voice/VoiceInputControl';
 import { ContextUsageBar } from './ContextUsageBar';
+import { applySelectiveFixScopeInstructions } from '../../utils/fixPromptScope';
+import { resolveEffectiveSelectedDiagnostics } from '../../utils/diagnosticsSelection';
 
 interface ChatAreaProps {
     originalCode?: string;
@@ -58,6 +60,13 @@ function formatDiagnosticsLines(diagnostics?: Array<BslDiagnostic | string> | nu
 
         return `- Line ${diagnostic.line + 1}: ${diagnostic.message} (${diagnostic.severity})`;
     });
+}
+
+function resolveDiagnosticsForChat(
+    diagnostics: any[] | undefined,
+    selectedDiagnostics: any[] | null | undefined,
+) {
+    return resolveEffectiveSelectedDiagnostics(diagnostics || [], selectedDiagnostics);
 }
 
 function buildCopyContent(msg: ChatMessage): string {
@@ -317,6 +326,7 @@ export function ChatArea({
     const [editText, setEditText] = useState('');
     const contextCode = loadedContextCode;
     const isContextSelection = isContextSelectionProp;
+    const currentDiffBaseCode = modifiedCode || contextCode || originalCode || '';
 
     // Slash Commands state
     const [showCommands, setShowCommands] = useState(false);
@@ -419,13 +429,21 @@ export function ChatArea({
             }
         }
 
-        const effectiveDiagnostics = selectedDiagnostics !== null && selectedDiagnostics !== undefined
-            ? selectedDiagnostics
-            : diagnostics;
+        const currentDiagnostics = options?.diagnosticsOverride ?? (diagnostics || []);
+        const selection = resolveDiagnosticsForChat(currentDiagnostics, selectedDiagnostics);
+        const effectiveDiagnostics = selection.effectiveDiagnostics;
         const diagStringsText = formatDiagnosticsLines(options?.diagnosticsOverride ?? effectiveDiagnostics).join('\n');
         expanded = expanded.replace('{diagnostics}', diagStringsText || 'Ошибок не обнаружено');
         expanded = expanded.replace('{code}', activeCode);
         expanded = expanded.replace('{query}', queryPart);
+        expanded = applySelectiveFixScopeInstructions(expanded, {
+            commandId: foundCmd.id,
+            totalDiagnosticsCount: currentDiagnostics.length,
+            selectedDiagnosticsCount: selection.selectionWasExplicit ? effectiveDiagnostics.length : null,
+            diagnosticsText: diagStringsText || 'Ошибок не обнаружено',
+            code: activeCode,
+            queryPart,
+        });
 
         return {
             content: expanded,
@@ -763,7 +781,7 @@ export function ChatArea({
         // Срабатывает сразу (в том числе во время стриминга), чтобы DiffEditor обновлялся в реальном времени.
         if (messages.length === 0) return;
         const lastMsg = messages[messages.length - 1];
-        if (lastMsg.role !== 'assistant' || !hasDiffBlocks(lastMsg.content)) return;
+        if (lastMsg.role !== 'assistant' || !hasApplicableDiffBlocks(currentDiffBaseCode, lastMsg.content)) return;
 
         const msgKey = lastMsg.id || String(messages.length - 1);
 
@@ -784,7 +802,7 @@ export function ChatArea({
         if (!isLoading) {
             // Открываем боковую панель только если есть базовый код для сравнения.
             // Если код не был загружен из Конфигуратора — панель не открываем.
-            const hasBaseCode = !!(modifiedCode || contextCode || originalCode);
+            const hasBaseCode = !!currentDiffBaseCode;
             if (hasBaseCode && onActiveDiffChange) {
                 onActiveDiffChange(lastMsg.content);
             }
@@ -793,7 +811,7 @@ export function ChatArea({
                 setAppliedDiffMessages(prev => new Set(prev).add(msgKey));
             }
         }
-    }, [messages, isLoading, onActiveDiffChange, appliedDiffMessages, diffActions, activeDiffContent]);
+    }, [messages, isLoading, onActiveDiffChange, appliedDiffMessages, diffActions, activeDiffContent, currentDiffBaseCode]);
 
     const handleSendMessage = async (textOverride?: string) => {
         const rawInput = textOverride || input;
@@ -818,10 +836,13 @@ export function ChatArea({
             onPrepareDiffBase?.(requestBaseCode);
         }
 
-        const diagSource = selectedDiagnostics !== null && selectedDiagnostics !== undefined
-            ? selectedDiagnostics
-            : (diagnostics || []);
-        if (selectedDiagnostics !== null && selectedDiagnostics !== undefined && selectedDiagnostics.length === 0 && (diagnostics || []).length > 0) {
+        const diagnosticsSelection = resolveDiagnosticsForChat(diagnostics || [], selectedDiagnostics);
+        const diagSource = diagnosticsSelection.effectiveDiagnostics;
+        if (
+            diagnosticsSelection.selectionWasExplicit
+            && diagSource.length === 0
+            && (diagnostics || []).length > 0
+        ) {
             alert('Выберите хотя бы одну проблему в панели Problems');
             return;
         }
@@ -883,6 +904,10 @@ export function ChatArea({
                 console.log("[TEST] Triggering sendMessage with:", text);
                 handleSendMessage(text);
             },
+            expandSlashCommand: async (text: string) => {
+                console.log("[TEST] Expanding slash command:", text);
+                return await expandSlashCommand(text);
+            },
             injectAssistantMessage: (content: string) => {
                 console.log("[TEST] injectAssistantMessage called, length:", content.length);
                 injectMessage({
@@ -903,6 +928,7 @@ export function ChatArea({
     }, [
         activeDiffContent,
         contextCode,
+        expandSlashCommand,
         handleSendMessage,
         injectMessage,
         modifiedCode,
@@ -997,9 +1023,7 @@ export function ChatArea({
 
     const handleSaveEdit = (index: number) => {
         if (editText.trim()) {
-            const editDiagSource = selectedDiagnostics !== null && selectedDiagnostics !== undefined
-                ? selectedDiagnostics
-                : (diagnostics || []);
+            const editDiagSource = resolveDiagnosticsForChat(diagnostics || [], selectedDiagnostics).effectiveDiagnostics;
             const diagStrings = editDiagSource.map((d: any) => `- Line ${d.line + 1}: ${d.message} (${d.severity})`);
             const rerunBaseCode = modifiedCode || contextCode || originalCode || '';
             if (rerunBaseCode.trim()) {
@@ -1023,12 +1047,12 @@ export function ChatArea({
     // два сообщения показывают кнопки одновременно.
     const lastDiffMsgIndex = useMemo(() => {
         for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === 'assistant' && hasDiffBlocks(messages[i].content)) {
+            if (messages[i].role === 'assistant' && hasApplicableDiffBlocks(currentDiffBaseCode, messages[i].content)) {
                 return i;
             }
         }
         return -1;
-    }, [messages]);
+    }, [messages, currentDiffBaseCode]);
 
     return (
         <div id="chat-area" className="flex flex-col flex-1 min-w-[300px] transition-all duration-300">
@@ -1225,7 +1249,7 @@ export function ChatArea({
                                                             const currentOriginalCode = modifiedCode || contextCode || originalCode || "";
                                                             const cleanedContent = cleanDiffArtifacts(part.content || '', currentOriginalCode);
                                                             if (cleanedContent.trim().length === 0) {
-                                                                if (!hasDiffBlocks(part.content || '')) return null;
+                                                                if (!hasApplicableDiffBlocks(currentOriginalCode, part.content || '')) return null;
                                                                 return (
                                                                     <div key={partIdx} className="flex items-center gap-1.5 text-zinc-500 text-xs italic py-0.5">
                                                                         <FileDiff className="w-3 h-3 flex-shrink-0" />
@@ -1303,7 +1327,7 @@ export function ChatArea({
 
                                                         if (msg.role !== 'assistant') return null;
                                                         if (!hasVisibleContent) {
-                                                            if (!hasDiffBlocks(msg.content || '')) return null;
+                                                            if (!hasApplicableDiffBlocks(currentOriginalCode, msg.content || '')) return null;
                                                             return (
                                                                 <div className="flex items-center gap-1.5 text-zinc-500 text-xs italic py-0.5">
                                                                     <FileDiff className="w-3 h-3 flex-shrink-0" />
@@ -1360,8 +1384,7 @@ export function ChatArea({
                                                         const shouldShowBanner = hasContext &&
                                                             i === lastDiffMsgIndex &&
                                                             !isLoading &&
-                                                            hasDiffBlocks(msg.content) &&
-                                                            parseDiffBlocks(msg.content).length > 0 &&
+                                                            hasApplicableDiffBlocks(currentOriginalCode, msg.content) &&
                                                             !dismissedDiffMessages.has(msgKey);
 
                                                         if (!shouldShowBanner) return null;
