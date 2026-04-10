@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { Minus, Square, X } from 'lucide-react';
 import { useSettings } from '../../contexts/SettingsContext';
@@ -383,6 +384,11 @@ export function MainLayout() {
         setActiveDiffContent('');
     }, [clearAll, clearChat]);
 
+    const [appVersion, setAppVersion] = useState<string>('');
+    useEffect(() => {
+        getVersion().then(v => setAppVersion(v)).catch(() => {});
+    }, []);
+
     const minimize = () => appWindow?.minimize();
     const maximize = async () => {
         const isMaximized = await appWindow?.isMaximized();
@@ -426,6 +432,7 @@ export function MainLayout() {
                 <div className="relative z-10 flex items-center gap-2 pointer-events-none">
                     <img src={logo} alt="Logo" className="w-5 h-5" />
                     <span className="text-sm font-medium text-zinc-300">Mini AI 1C</span>
+                    {appVersion && <span className="text-xs text-zinc-600">v{appVersion}</span>}
                 </div>
                 <div className="relative z-50 flex items-center gap-1 pointer-events-auto">
                     <button onClick={minimize} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white"><Minus className="w-4 h-4" /></button>

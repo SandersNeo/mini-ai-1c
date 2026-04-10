@@ -64,7 +64,7 @@ function App() {
     const handleContextMenu = (e: MouseEvent) => { e.preventDefault(); };
     document.addEventListener('contextmenu', handleContextMenu);
 
-    return () => {
+return () => {
       document.removeEventListener('contextmenu', handleContextMenu);
     };
   }, []);

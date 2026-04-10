@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Download, RefreshCw, Upload } from 'lucide-react';
+import { Download, RefreshCw, Upload, Info, ExternalLink } from 'lucide-react';
+import { getVersion } from '@tauri-apps/api/app';
 
 import {
     exportSettings,
@@ -8,6 +9,14 @@ import {
     validateImportSettingsFile,
 } from '../../api/settings';
 import { AppSettings } from '../../types/settings';
+
+type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error';
+
+interface ReleaseInfo {
+    version: string;
+    url: string;
+    name: string;
+}
 
 interface GeneralTabProps {
     settings: AppSettings;
@@ -26,6 +35,34 @@ export function GeneralTab({
     const [statusTone, setStatusTone] = useState<StatusTone>('success');
     const [exporting, setExporting] = useState(false);
     const [importing, setImporting] = useState(false);
+
+    const [appVersion, setAppVersion] = useState<string>('...');
+    const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
+    const [latestRelease, setLatestRelease] = useState<ReleaseInfo | null>(null);
+
+    useEffect(() => {
+        getVersion().then(setAppVersion).catch(() => setAppVersion('?'));
+    }, []);
+
+    const checkForUpdates = async () => {
+        setUpdateStatus('checking');
+        setLatestRelease(null);
+        try {
+            const res = await fetch('https://api.github.com/repos/hawkxtreme/mini-ai-1c/releases/latest', {
+                headers: { Accept: 'application/vnd.github+json' },
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const latest = (data.tag_name as string).replace(/^v/, '');
+            const release: ReleaseInfo = { version: latest, url: data.html_url, name: data.name || `v${latest}` };
+            setLatestRelease(release);
+
+            const current = appVersion.replace(/^v/, '');
+            setUpdateStatus(current === latest ? 'up-to-date' : 'update-available');
+        } catch {
+            setUpdateStatus('error');
+        }
+    };
 
     const handleExport = async () => {
         setExporting(true);
@@ -188,6 +225,58 @@ export function GeneralTab({
                                 {transferStatus}
                             </p>
                         )}
+                    </div>
+                </section>
+
+                <section>
+                    <h3 className="mb-4 text-lg font-medium text-zinc-100">О приложении</h3>
+
+                    <div className="space-y-4 rounded-xl border border-zinc-700 bg-zinc-800/50 p-5">
+                        <div className="flex items-center gap-3">
+                            <Info className="h-4 w-4 text-zinc-400 shrink-0" />
+                            <span className="text-sm text-zinc-300">
+                                Mini AI 1C — версия{' '}
+                                <span className="font-mono font-semibold text-zinc-100">{appVersion}</span>
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <button
+                                type="button"
+                                onClick={checkForUpdates}
+                                disabled={updateStatus === 'checking'}
+                                className="flex items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-700 px-3 py-1.5 text-xs text-zinc-200 transition-colors hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {updateStatus === 'checking' ? (
+                                    <RefreshCw className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="h-4 w-4" />
+                                )}
+                                Проверить обновления
+                            </button>
+
+                            {updateStatus === 'up-to-date' && (
+                                <span className="text-xs text-green-400">✓ Установлена актуальная версия</span>
+                            )}
+
+                            {updateStatus === 'update-available' && latestRelease && (
+                                <span className="flex items-center gap-1.5 text-xs text-yellow-400">
+                                    Доступна версия {latestRelease.version} —{' '}
+                                    <a
+                                        href={latestRelease.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 underline hover:text-yellow-300"
+                                    >
+                                        скачать <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                </span>
+                            )}
+
+                            {updateStatus === 'error' && (
+                                <span className="text-xs text-red-400">Не удалось проверить обновления</span>
+                            )}
+                        </div>
                     </div>
                 </section>
             </div>
