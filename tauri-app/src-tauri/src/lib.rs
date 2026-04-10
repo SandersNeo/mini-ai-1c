@@ -30,7 +30,11 @@ use std::sync::Arc;
 
 use commands::*;
 
-use tauri::{tray::TrayIconBuilder, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -141,11 +145,54 @@ pub fn run() {
             quick_chat_invoke,
         ])
         .setup(|app| {
-            // Setup Tray Icon
-            let _tray = TrayIconBuilder::new()
+            // Setup Tray Icon with context menu
+            let quit_item = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&quit_item])?;
+
+            let tray_handle = app.handle().clone();
+            let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Mini AI 1C")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(move |_tray, event| {
+                    match event {
+                        // Single or double left click — show/focus window
+                        TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. } => {
+                            if let Some(window) = tray_handle.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+                .on_menu_event({
+                    let app_handle = app.handle().clone();
+                    move |_, event| {
+                        if event.id().as_ref() == "quit" {
+                            if let Some(tray) = app_handle.tray_by_id("main-tray") {
+                                let _ = tray.set_visible(false);
+                            }
+                            app_handle.exit(0);
+                        }
+                    }
+                })
                 .build(app)?;
+
+            // Handle window close: hide tray icon then exit cleanly
+            if let Some(main_window) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                main_window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        // Hide tray icon before exit to prevent ghost icon in Windows tray
+                        if let Some(tray) = app_handle.tray_by_id("main-tray") {
+                            let _ = tray.set_visible(false);
+                        }
+                        app_handle.exit(0);
+                    }
+                });
+            }
 
             // Migration: com.miniai1c.agent → com.mini-ai-1c
             // The app identifier was changed; migrate old Tauri app data to the new folder.
