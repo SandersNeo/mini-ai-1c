@@ -206,6 +206,13 @@ pub async fn get_mcp_server_logs(server_id: String) -> Result<Vec<String>, Strin
     Ok(crate::mcp_client::McpManager::get_logs(&server_id).await)
 }
 
+/// Write a log message from the frontend to the Rust backend log buffer
+#[tauri::command]
+pub async fn write_frontend_log(message: String) -> Result<(), String> {
+    crate::logger::log(&message, true);
+    Ok(())
+}
+
 /// Save all debug logs to a file
 #[tauri::command]
 pub async fn save_debug_logs(app_handle: tauri::AppHandle) -> Result<(), String> {
