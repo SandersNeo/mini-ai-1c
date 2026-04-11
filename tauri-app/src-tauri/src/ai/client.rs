@@ -279,14 +279,21 @@ pub async fn stream_chat_completion(
 
     let profile = get_active_profile().ok_or("No active LLM profile")?;
     let has_tool_heavy_context = qwen_has_tool_heavy_context(&messages);
-    // Build the same dynamic system prompt for all providers, including Codex CLI.
+    // Build system prompt: use lightweight variant for local providers (Ollama/LMStudio)
+    // to avoid smaller models rephrasing instead of responding.
     let tools_info = get_available_tools().await;
     let tools: Vec<Tool> = tools_info.iter().map(|i| i.tool.clone()).collect();
     let tools_opt = if tools.is_empty() { None } else { Some(tools) };
 
+    let system_prompt = if is_local_provider(Some(&profile.provider)) {
+        get_lightweight_system_prompt(&tools_info, &messages)
+    } else {
+        get_system_prompt(&tools_info, &messages)
+    };
+
     let mut api_messages = vec![ApiMessage {
         role: "system".to_string(),
-        content: Some(get_system_prompt(&tools_info, &messages)),
+        content: Some(system_prompt),
         tool_calls: None,
         tool_call_id: None,
         name: None,

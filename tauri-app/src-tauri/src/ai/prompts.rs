@@ -1,4 +1,5 @@
 use super::models::{ApiMessage, ToolInfo};
+use crate::llm_profiles::LLMProvider;
 use crate::settings::{load_settings, PromptBehaviorPreset};
 
 /// Константа с инструкциями для diff-формата (Search/Replace)
@@ -89,6 +90,62 @@ pub fn has_code_context(messages: &[ApiMessage]) -> bool {
         }
     }
     false
+}
+
+/// Возвращает true для локальных провайдеров (Ollama, LMStudio), которым нужен компактный промпт.
+pub fn is_local_provider(provider: Option<&LLMProvider>) -> bool {
+    matches!(
+        provider,
+        Some(LLMProvider::Ollama) | Some(LLMProvider::LMStudio)
+    )
+}
+
+/// Компактный системный промпт для локальных моделей (Ollama/LMStudio).
+/// Исключает тяжёлые инструкции (DIFF_FORMAT_INSTRUCTIONS полностью),
+/// огромную матрицу MCP-инструментов и правила маркировки — всё это перегружает
+/// малые модели (7-14B), заставляя их перефразировать вопрос вместо ответа.
+pub fn get_lightweight_system_prompt(
+    available_tools: &[ToolInfo],
+    messages: &[ApiMessage],
+) -> String {
+    let target_lang = detect_target_lang(messages);
+    let has_code = has_code_context(messages);
+
+    let diff_section = if has_code {
+        r#"
+При изменении кода используй ТОЛЬКО xml-формат diff:
+<diff>
+  <search>[точный фрагмент оригинала]</search>
+  <replace>[новый вариант]</replace>
+</diff>
+При создании кода с нуля — используй блок ```bsl.
+Не переписывай весь файл — изменяй только запрошенные строки."#
+    } else {
+        "\nПри создании нового кода используй блок ```bsl."
+    };
+
+    let mut prompt = format!(
+        r#"Ты — AI-ассистент для разработки на платформе 1С:Предприятие.
+Отвечай ТОЛЬКО на {target_lang} языке.
+Выполняй запросы пользователя точно и без лишних изменений.
+Не задавай уточняющих вопросов — выполняй задачу сразу.
+{diff_section}"#,
+        target_lang = target_lang,
+        diff_section = diff_section,
+    );
+
+    // Добавляем краткое перечисление доступных инструментов (без подробной матрицы)
+    if !available_tools.is_empty() {
+        prompt.push_str("\n\nДоступные инструменты:\n");
+        for info in available_tools {
+            let name = &info.tool.function.name;
+            let desc = &info.tool.function.description;
+            let short_desc = desc.lines().next().unwrap_or(desc);
+            prompt.push_str(&format!("- `{name}`: {short_desc}\n"));
+        }
+    }
+
+    prompt
 }
 
 /// Get dynamic system prompt based on available tools
@@ -526,5 +583,161 @@ mod tests {
         assert!(prompt.contains("=== SELECTIVE BSL FIX SCOPE ==="));
         assert!(prompt.contains("НЕ вызывай `check_bsl_syntax` до внесения правок"));
         assert!(prompt.contains("исправляй только явно перечисленные выбранные диагностики"));
+    }
+
+    #[test]
+    fn lightweight_prompt_is_shorter_than_full_prompt() {
+        let tools = vec![make_check_bsl_tool()];
+        let msgs = vec![make_user_message("напиши функцию")];
+
+        let full = get_system_prompt(&tools, &msgs);
+        let light = get_lightweight_system_prompt(&tools, &msgs);
+
+        // Лёгкий промпт должен быть не длиннее половины полного.
+        assert!(
+            light.len() < full.len() / 2,
+            "lightweight ({} chars) should be < half of full ({} chars)",
+            light.len(),
+            full.len(),
+        );
+    }
+
+    #[test]
+    fn is_local_provider_matches_ollama_and_lmstudio() {
+        use crate::llm_profiles::LLMProvider;
+        assert!(is_local_provider(Some(&LLMProvider::Ollama)));
+        assert!(is_local_provider(Some(&LLMProvider::LMStudio)));
+        assert!(!is_local_provider(Some(&LLMProvider::OpenAI)));
+        assert!(!is_local_provider(Some(&LLMProvider::Anthropic)));
+        assert!(!is_local_provider(None));
+    }
+
+    /// Интеграционный тест с реальным Ollama + qwen2.5-coder:14b.
+    ///
+    /// Запустить:
+    ///   OLLAMA_HOST=http://localhost:11434 cargo test -p mini-ai-1c -- ollama --nocapture --ignored
+    ///
+    /// Тест пропускается автоматически если Ollama недоступна или модель не загружена.
+    #[tokio::test]
+    #[ignore = "requires Ollama running with qwen2.5-coder:14b; run with --ignored"]
+    async fn ollama_qwen_coder_14b_answers_not_rephrases() {
+        let host = std::env::var("OLLAMA_HOST")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("reqwest client");
+
+        // --- 1. Проверяем доступность Ollama ---
+        let tags_url = format!("{host}/api/tags");
+        let tags_resp = client.get(&tags_url).send().await;
+        let tags_resp = match tags_resp {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[SKIP] Ollama не доступна по {host}: {e}");
+                return;
+            }
+        };
+
+        let tags_json: serde_json::Value = tags_resp
+            .json()
+            .await
+            .expect("Ollama /api/tags returned invalid JSON");
+
+        // --- 2. Проверяем что модель загружена ---
+        let model_name = "qwen2.5-coder:14b";
+        let models = tags_json["models"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let model_available = models.iter().any(|m| {
+            m["name"].as_str().unwrap_or("").starts_with("qwen2.5-coder:14b")
+                || m["model"].as_str().unwrap_or("").starts_with("qwen2.5-coder:14b")
+        });
+        if !model_available {
+            eprintln!("[SKIP] Модель {model_name} не найдена в Ollama. Доступные: {:?}",
+                models.iter().map(|m| m["name"].as_str().unwrap_or("")).collect::<Vec<_>>());
+            return;
+        }
+
+        // --- 3. Формируем лёгкий промпт ---
+        let user_msg_content = "Напиши простую BSL-функцию ФункцияПример() без параметров, которая возвращает строку \"Привет, 1С!\".";
+        let user_msg = make_user_message(user_msg_content);
+        let tools: Vec<ToolInfo> = vec![];
+        let system_content = get_lightweight_system_prompt(&tools, &[user_msg.clone()]);
+
+        eprintln!("[INFO] Лёгкий промпт ({} chars):\n{}", system_content.len(), system_content);
+
+        // --- 4. Отправляем запрос ---
+        let payload = serde_json::json!({
+            "model": model_name,
+            "messages": [
+                { "role": "system", "content": system_content },
+                { "role": "user",   "content": user_msg_content }
+            ],
+            "stream": false,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 512
+            }
+        });
+
+        let chat_url = format!("{host}/api/chat");
+        let resp = client
+            .post(&chat_url)
+            .json(&payload)
+            .send()
+            .await
+            .expect("Chat request failed");
+
+        let status = resp.status();
+        assert!(status.is_success(), "Ollama вернула статус {status}");
+
+        let body: serde_json::Value = resp.json().await.expect("Response is not valid JSON");
+        let answer = body["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        eprintln!("[INFO] Ответ модели:\n{answer}");
+
+        // --- 5. Проверяем что ответ содержит BSL-код, а не перефразирование ---
+        let lower = answer.to_lowercase();
+        let has_code = answer.contains("Функция")
+            || answer.contains("функция")
+            || answer.contains("Процедура")
+            || answer.contains("процедура")
+            || answer.contains("```bsl")
+            || answer.contains("КонецФункции")
+            || answer.contains("Возврат");
+
+        // Индикатор «перефразирования»: ответ — только вопрос без кода
+        let first_line = answer.lines().next().unwrap_or("").trim();
+        let is_only_question = first_line.ends_with('?') && !has_code;
+
+        assert!(
+            !is_only_question,
+            "Модель перефразировала вопрос вместо ответа. Первая строка: «{first_line}»"
+        );
+
+        assert!(
+            has_code,
+            "Ответ не содержит BSL-кода. Ответ: «{answer}»"
+        );
+
+        // Дополнительная проверка: промпт не содержит огромную матрицу инструментов
+        assert!(
+            !system_content.contains("МАТРИЦА ВЫБОРА ИНСТРУМЕНТА"),
+            "Лёгкий промпт не должен содержать матрицу инструментов"
+        );
+        assert!(
+            !system_content.contains("DIFF_FORMAT_INSTRUCTIONS"),
+            "Лёгкий промпт не должен содержать полные DIFF инструкции"
+        );
+
+        eprintln!("[PASS] qwen2.5-coder:14b ответила кодом, не перефразировала вопрос.");
+        let _ = lower; // suppress unused warning
     }
 }
