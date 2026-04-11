@@ -376,6 +376,7 @@ export function ChatArea({
         content: string;
         displayContent?: string;
         isSlashCommand: boolean;
+        commandId?: string;
     }> => {
         let textToSend = rawInput;
         let displayContent: string | undefined;
@@ -449,6 +450,7 @@ export function ChatArea({
             content: expanded,
             displayContent,
             isSlashCommand,
+            commandId: foundCmd.id,
         };
     }, [
         contextCode,
@@ -819,11 +821,13 @@ export function ChatArea({
         let displayContent: string | undefined = undefined;
         let isSlashCommand = false;
 
+        let commandId: string | undefined;
         try {
             const prepared = await expandSlashCommand(rawInput);
             textToSend = prepared.content;
             displayContent = prepared.displayContent;
             isSlashCommand = prepared.isSlashCommand;
+            commandId = prepared.commandId;
         } catch (err) {
             alert(String(err));
             return;
@@ -838,8 +842,11 @@ export function ChatArea({
 
         const diagnosticsSelection = resolveDiagnosticsForChat(diagnostics || [], selectedDiagnostics);
         const diagSource = diagnosticsSelection.effectiveDiagnostics;
+        // Блокируем только команду /исправить (id: 'fix') когда явно не выбрана ни одна диагностика.
+        // Свободные сообщения и другие команды не требуют выбранных диагностик.
         if (
-            diagnosticsSelection.selectionWasExplicit
+            commandId === 'fix'
+            && diagnosticsSelection.selectionWasExplicit
             && diagSource.length === 0
             && (diagnostics || []).length > 0
         ) {
