@@ -132,6 +132,29 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                     }).finally(() => {
                         setLoadingModels(false);
                     });
+                } else if (p.provider === 'LMStudio' || p.provider === 'Ollama') {
+                    // Auto-fetch to get real context_window for local providers
+                    setLoadingModels(true);
+                    invoke<any[]>('fetch_models_from_provider', {
+                        providerId: p.provider,
+                        baseUrl: p.base_url || PROVIDERS.find(prov => prov.value === p.provider)?.defaultUrl || '',
+                        apiKey: ''
+                    }).then(res => {
+                        const sorted = sortModels(res);
+                        setModelList(sorted);
+                        const currentModel = sorted.find((m: any) => m.id === p.model);
+                        if (currentModel?.context_window) {
+                            setEditForm(prev => prev?.id === p.id ? ({
+                                ...prev,
+                                max_tokens: currentModel.context_window || prev.max_tokens,
+                                context_window_override: currentModel.context_window
+                            }) : prev);
+                        }
+                    }).catch(e => {
+                        console.error('[LLMSettings] Failed to auto-fetch LMStudio/Ollama models:', e);
+                    }).finally(() => {
+                        setLoadingModels(false);
+                    });
                 }
             }
         }

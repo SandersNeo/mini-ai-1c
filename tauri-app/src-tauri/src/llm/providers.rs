@@ -182,14 +182,13 @@ pub async fn fetch_models_from_api(
     }
 
     // OpenAI/OpenRouter: { "data": [ { "id": "..." } ] }
-    // LM Studio adds: max_context_length
+    // Some proxies may include context_window or max_tokens.
+    // LM Studio's /v1/models does NOT include context info — handled below via /api/v0/models.
     #[derive(Deserialize)]
     struct OpenAiModel {
         id: String,
         context_window: Option<u32>,
         max_tokens: Option<u32>,
-        // LM Studio specific field
-        max_context_length: Option<u32>,
     }
     #[derive(Deserialize)]
     struct OpenAiResponse {
@@ -205,11 +204,7 @@ pub async fn fetch_models_from_api(
         .data
         .into_iter()
         .map(|m| {
-            // Prefer explicit context fields over the fallback default 4096
-            let cw = m.max_context_length
-                .or(m.context_window)
-                .or(m.max_tokens)
-                .unwrap_or(4096);
+            let cw = m.context_window.or(m.max_tokens).unwrap_or(4096);
             Model {
                 id: m.id.clone(),
                 name: m.id.clone(),
@@ -228,6 +223,13 @@ pub async fn fetch_models_from_api(
         enrich_ollama_context_windows(&client, &ollama_base, &mut models).await;
     }
 
+    // For LM Studio: /v1/models returns no context info. Use native /api/v0/models
+    // which has loaded_context_length (the actual runtime context) and max_context_length.
+    if provider_id == "LMStudio" {
+        let lms_base = derive_ollama_native_base(trimmed_base);
+        enrich_lmstudio_context_windows(&client, &lms_base, &mut models).await;
+    }
+
     Ok(models)
 }
 
@@ -241,6 +243,19 @@ fn derive_ollama_native_base(openai_base: &str) -> String {
         .to_string()
 }
 
+/// Parses num_ctx from Ollama's plain-text parameters string.
+/// Format: "num_ctx                        8192\ntemperature                    0.7\n..."
+fn parse_num_ctx(parameters: &str) -> Option<u32> {
+    parameters.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        if parts.next()? == "num_ctx" {
+            parts.next()?.parse::<u32>().ok()
+        } else {
+            None
+        }
+    })
+}
+
 /// Calls POST /api/show for each model in parallel and updates context_window
 /// from model_info["llm.context_length"].
 async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, models: &mut Vec<Model>) {
@@ -248,6 +263,8 @@ async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, model
 
     #[derive(Deserialize)]
     struct ShowResponse {
+        // "parameters" is a plain-text string with lines like "num_ctx 8192\ntemperature 0.7"
+        parameters: Option<String>,
         model_info: Option<serde_json::Map<String, serde_json::Value>>,
     }
 
@@ -270,11 +287,13 @@ async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, model
                     Ok(resp) if resp.status().is_success() => {
                         match resp.json::<ShowResponse>().await {
                             Ok(show) => {
-                                // Ollama uses architecture-specific keys: e.g.
-                                // "qwen2.context_length", "llama.context_length",
-                                // "gemma.context_length" — find any key ending with
-                                // ".context_length".
-                                let ctx = show
+                                // Priority 1: num_ctx from Modelfile parameters
+                                // (user-configured context, e.g. "PARAMETER num_ctx 8192")
+                                let num_ctx = show.parameters.as_deref().and_then(parse_num_ctx);
+
+                                // Priority 2: architecture max from model_info
+                                // e.g. "qwen2.context_length", "llama.context_length"
+                                let arch_ctx = show
                                     .model_info
                                     .as_ref()
                                     .and_then(|mi| {
@@ -283,6 +302,8 @@ async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, model
                                             .and_then(|(_, v)| v.as_u64())
                                     })
                                     .map(|v| v as u32);
+
+                                let ctx = num_ctx.or(arch_ctx);
                                 (name, ctx)
                             }
                             Err(e) => {
@@ -325,6 +346,62 @@ async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, model
                 );
                 m.context_window = ctx;
             }
+        }
+    }
+}
+
+/// Calls GET /api/v0/models (LM Studio native API) and updates context_window
+/// from loaded_context_length (actual runtime context) or max_context_length.
+async fn enrich_lmstudio_context_windows(client: &Client, lms_base: &str, models: &mut Vec<Model>) {
+    let url = format!("{}/api/v0/models", lms_base);
+
+    #[derive(Deserialize)]
+    struct LmsModel {
+        id: String,
+        loaded_context_length: Option<u32>,
+        max_context_length: Option<u32>,
+    }
+    #[derive(Deserialize)]
+    struct LmsResponse {
+        data: Vec<LmsModel>,
+    }
+
+    let result = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<LmsResponse>().await {
+                Ok(lms) => {
+                    for lm in lms.data {
+                        // Prefer loaded_context_length (actual runtime) over max_context_length
+                        let ctx = lm.loaded_context_length.or(lm.max_context_length);
+                        if let Some(ctx) = ctx {
+                            if let Some(m) = models.iter_mut().find(|m| m.id == lm.id) {
+                                crate::app_log!(
+                                    "[LMStudio] context_window for {}: {} → {}",
+                                    lm.id,
+                                    m.context_window,
+                                    ctx
+                                );
+                                m.context_window = ctx;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::app_log!("[LMStudio] /api/v0/models parse error: {}", e);
+                }
+            }
+        }
+        Ok(resp) => {
+            crate::app_log!("[LMStudio] /api/v0/models returned {}", resp.status());
+        }
+        Err(e) => {
+            crate::app_log!("[LMStudio] /api/v0/models request failed: {}", e);
         }
     }
 }
