@@ -575,10 +575,8 @@ mod tests {
 
     #[test]
     fn system_prompt_describes_strict_rule_for_selective_fix_scope() {
-        let prompt = get_system_prompt(
-            &[make_check_bsl_tool()],
-            &[make_user_message("/исправить")],
-        );
+        let prompt =
+            get_system_prompt(&[make_check_bsl_tool()], &[make_user_message("/исправить")]);
 
         assert!(prompt.contains("=== SELECTIVE BSL FIX SCOPE ==="));
         assert!(prompt.contains("НЕ вызывай `check_bsl_syntax` до внесения правок"));
@@ -621,8 +619,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Ollama running with qwen2.5-coder:14b; run with --ignored"]
     async fn ollama_qwen_coder_14b_answers_not_rephrases() {
-        let host = std::env::var("OLLAMA_HOST")
-            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let host =
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -647,17 +645,25 @@ mod tests {
 
         // --- 2. Проверяем что модель загружена ---
         let model_name = "qwen2.5-coder:14b";
-        let models = tags_json["models"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let models = tags_json["models"].as_array().cloned().unwrap_or_default();
         let model_available = models.iter().any(|m| {
-            m["name"].as_str().unwrap_or("").starts_with("qwen2.5-coder:14b")
-                || m["model"].as_str().unwrap_or("").starts_with("qwen2.5-coder:14b")
+            m["name"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("qwen2.5-coder:14b")
+                || m["model"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("qwen2.5-coder:14b")
         });
         if !model_available {
-            eprintln!("[SKIP] Модель {model_name} не найдена в Ollama. Доступные: {:?}",
-                models.iter().map(|m| m["name"].as_str().unwrap_or("")).collect::<Vec<_>>());
+            eprintln!(
+                "[SKIP] Модель {model_name} не найдена в Ollama. Доступные: {:?}",
+                models
+                    .iter()
+                    .map(|m| m["name"].as_str().unwrap_or(""))
+                    .collect::<Vec<_>>()
+            );
             return;
         }
 
@@ -667,7 +673,11 @@ mod tests {
         let tools: Vec<ToolInfo> = vec![];
         let system_content = get_lightweight_system_prompt(&tools, &[user_msg.clone()]);
 
-        eprintln!("[INFO] Лёгкий промпт ({} chars):\n{}", system_content.len(), system_content);
+        eprintln!(
+            "[INFO] Лёгкий промпт ({} chars):\n{}",
+            system_content.len(),
+            system_content
+        );
 
         // --- 4. Отправляем запрос ---
         let payload = serde_json::json!({
@@ -722,10 +732,7 @@ mod tests {
             "Модель перефразировала вопрос вместо ответа. Первая строка: «{first_line}»"
         );
 
-        assert!(
-            has_code,
-            "Ответ не содержит BSL-кода. Ответ: «{answer}»"
-        );
+        assert!(has_code, "Ответ не содержит BSL-кода. Ответ: «{answer}»");
 
         // Дополнительная проверка: промпт не содержит огромную матрицу инструментов
         assert!(

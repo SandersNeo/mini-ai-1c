@@ -1053,7 +1053,8 @@ fn resolve_bsl_file_path(file: &str, config_root: Option<&str>) -> String {
         return file.to_string();
     }
     if let Some(root) = config_root {
-        let joined = std::path::Path::new(root).join(file.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let joined =
+            std::path::Path::new(root).join(file.replace('/', std::path::MAIN_SEPARATOR_STR));
         return joined.to_string_lossy().to_string();
     }
     file.to_string()
@@ -1071,7 +1072,9 @@ fn path_to_file_uri(abs_path: &str) -> String {
 
 /// Convert a file:// URI back to an absolute path string.
 fn uri_to_abs_path(uri: &str) -> String {
-    let s = uri.trim_start_matches("file:///").trim_start_matches("file://");
+    let s = uri
+        .trim_start_matches("file:///")
+        .trim_start_matches("file://");
     // On Windows, restore drive letter path
     if cfg!(windows) && s.len() > 1 && s.chars().nth(1) == Some(':') {
         s.replace('/', "\\")
@@ -1103,7 +1106,10 @@ async fn ensure_bsl_connected(client: &mut BSLClient) -> Result<(), String> {
                 client.start_server()?;
             }
             client.connect().await.map_err(|e2| {
-                format!("BSL LS не запущен или недоступен: {}\nДоп. ошибка: {}", e, e2)
+                format!(
+                    "BSL LS не запущен или недоступен: {}\nДоп. ошибка: {}",
+                    e, e2
+                )
             })?;
         }
     }
@@ -1239,12 +1245,16 @@ impl InternalMcpHandler for BSLMcpHandler {
             }
 
             "goto_definition" => {
-                let file = arguments["file"].as_str()
+                let file = arguments["file"]
+                    .as_str()
                     .ok_or("Параметр 'file' обязателен")?;
-                let line = arguments["line"].as_u64()
+                let line = arguments["line"]
+                    .as_u64()
                     .ok_or("Параметр 'line' обязателен")? as u32;
-                let character = arguments["character"].as_u64()
-                    .ok_or("Параметр 'character' обязателен")? as u32;
+                let character = arguments["character"]
+                    .as_u64()
+                    .ok_or("Параметр 'character' обязателен")?
+                    as u32;
                 let config_root = arguments["config_root"].as_str();
 
                 // Resolve to absolute path and convert to file:// URI
@@ -1275,12 +1285,16 @@ impl InternalMcpHandler for BSLMcpHandler {
             }
 
             "resolve_definition_context" => {
-                let file = arguments["file"].as_str()
+                let file = arguments["file"]
+                    .as_str()
                     .ok_or("Параметр 'file' обязателен")?;
-                let line = arguments["line"].as_u64()
+                let line = arguments["line"]
+                    .as_u64()
                     .ok_or("Параметр 'line' обязателен")? as u32;
-                let character = arguments["character"].as_u64()
-                    .ok_or("Параметр 'character' обязателен")? as u32;
+                let character = arguments["character"]
+                    .as_u64()
+                    .ok_or("Параметр 'character' обязателен")?
+                    as u32;
                 let radius = arguments["radius"].as_u64().unwrap_or(30) as usize;
                 let config_root = arguments["config_root"].as_str();
 
@@ -1293,10 +1307,12 @@ impl InternalMcpHandler for BSLMcpHandler {
                 let location_opt = client.goto_definition(&uri, line, character).await?;
                 let location = match location_opt {
                     Some(l) => l,
-                    None => return Ok(json!({
-                        "found": false,
-                        "message": "Определение не найдено."
-                    })),
+                    None => {
+                        return Ok(json!({
+                            "found": false,
+                            "message": "Определение не найдено."
+                        }))
+                    }
                 };
 
                 let target_display = uri_to_display_path(&location.uri, config_root);
@@ -1323,7 +1339,8 @@ impl InternalMcpHandler for BSLMcpHandler {
                             out.push_str(&format!("{} {:4} | {}\n", marker, num, ln));
                         }
                         out
-                    }).unwrap_or_default()
+                    })
+                    .unwrap_or_default()
                 } else {
                     String::new()
                 };

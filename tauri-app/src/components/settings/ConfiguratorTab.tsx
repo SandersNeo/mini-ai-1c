@@ -46,6 +46,7 @@ export function ConfiguratorTab({
 
     const bridgeEnabled = settings.configurator.editor_bridge_enabled ?? false;
     const autoApply = settings.configurator.editor_bridge_auto_apply ?? false;
+    const rdpMode = settings.configurator.rdp_mode ?? false;
 
     async function checkStatus() {
         setChecking(true);
@@ -225,8 +226,7 @@ export function ConfiguratorTab({
                     </div>
                 </section>
 
-                {bridgeEnabled && (
-                    <section>
+                <section>
                     <div className="space-y-3 rounded-xl border border-zinc-700 bg-zinc-800/50 p-4">
                         <div className="flex items-center justify-between gap-3">
                             <div className="text-xs font-semibold uppercase text-zinc-400">Параметры</div>
@@ -256,15 +256,29 @@ export function ConfiguratorTab({
                         </div>
 
                         <ToggleRow
+                            label="Включить быстрые действия в 1С Конфигураторе"
+                            description="Ctrl + ПКМ в редакторе открывает quick actions mini-ai."
+                            checked={bridgeEnabled}
+                            onChange={(value) => updateConf({ editor_bridge_enabled: value })}
+                        />
+
+                        <ToggleRow
+                            label="Режим RDP"
+                            description="Ждёт отпускания Ctrl перед overlay и безопаснее для RDP-сессий."
+                            checked={rdpMode}
+                            onChange={(value) => updateConf({ rdp_mode: value })}
+                        />
+
+                        <ToggleRow
                             label="Применять сразу без просмотра"
                             description="Сразу записывать безопасный результат без показа диф-редактора."
                             checked={autoApply}
                             onChange={(value) => updateConf({ editor_bridge_auto_apply: value })}
+                            disabled={!bridgeEnabled}
                         />
 
                     </div>
-                    </section>
-                )}
+                </section>
 
                 <section>
                     <div className="space-y-3 rounded-xl border border-zinc-700 bg-zinc-800/50 p-4">

@@ -258,7 +258,11 @@ fn parse_num_ctx(parameters: &str) -> Option<u32> {
 
 /// Calls POST /api/show for each model in parallel and updates context_window
 /// from model_info["llm.context_length"].
-async fn enrich_ollama_context_windows(client: &Client, ollama_base: &str, models: &mut Vec<Model>) {
+async fn enrich_ollama_context_windows(
+    client: &Client,
+    ollama_base: &str,
+    models: &mut Vec<Model>,
+) {
     let show_url = format!("{}/api/show", ollama_base);
 
     #[derive(Deserialize)]
@@ -563,14 +567,17 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Ollama with at least one model; run with --ignored"]
     async fn ollama_context_window_is_fetched_from_show() {
-        let host = std::env::var("OLLAMA_HOST")
-            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let host =
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
         let base_url = format!("{}/v1", host.trim_end_matches('/'));
 
         let result = fetch_models_from_api("Ollama", &base_url, "").await;
         let models = result.expect("fetch_models_from_api should succeed for Ollama");
 
-        assert!(!models.is_empty(), "Ollama should return at least one model");
+        assert!(
+            !models.is_empty(),
+            "Ollama should return at least one model"
+        );
 
         eprintln!("[INFO] Ollama models:");
         for m in &models {
@@ -584,7 +591,10 @@ mod tests {
             all_above_default,
             "All Ollama models should have context_window > 4096 (fetched from /api/show). \
              Got: {:?}",
-            models.iter().map(|m| (&m.id, m.context_window)).collect::<Vec<_>>()
+            models
+                .iter()
+                .map(|m| (&m.id, m.context_window))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -595,8 +605,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires LM Studio with Local Server started; run with --ignored"]
     async fn lmstudio_context_window_is_fetched_from_models() {
-        let host = std::env::var("LMSTUDIO_HOST")
-            .unwrap_or_else(|_| "http://localhost:1234".to_string());
+        let host =
+            std::env::var("LMSTUDIO_HOST").unwrap_or_else(|_| "http://localhost:1234".to_string());
         let base_url = format!("{}/v1", host.trim_end_matches('/'));
 
         let result = fetch_models_from_api("LMStudio", &base_url, "").await;
@@ -626,7 +636,10 @@ mod tests {
             all_above_default,
             "All LM Studio models should have context_window > 4096 (from max_context_length). \
              Got: {:?}",
-            models.iter().map(|m| (&m.id, m.context_window)).collect::<Vec<_>>()
+            models
+                .iter()
+                .map(|m| (&m.id, m.context_window))
+                .collect::<Vec<_>>()
         );
     }
 }

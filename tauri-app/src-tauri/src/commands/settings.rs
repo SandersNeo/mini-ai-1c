@@ -190,7 +190,8 @@ fn sanitize_chat_export_stem(raw_stem: &str) -> String {
     let mut previous_was_space = false;
 
     for ch in raw_stem.chars() {
-        let is_invalid = ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*');
+        let is_invalid =
+            ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*');
         if is_invalid || ch.is_whitespace() {
             if !previous_was_space && !sanitized.is_empty() {
                 sanitized.push(' ');
@@ -205,7 +206,9 @@ fn sanitize_chat_export_stem(raw_stem: &str) -> String {
 
     let trimmed = sanitized.trim_matches(|ch: char| ch == ' ' || ch == '.');
     let truncated = trimmed.chars().take(80).collect::<String>();
-    truncated.trim_matches(|ch: char| ch == ' ' || ch == '.').to_string()
+    truncated
+        .trim_matches(|ch: char| ch == ' ' || ch == '.')
+        .to_string()
 }
 
 fn build_chat_export_file_name(suggested_file_name: Option<String>) -> String {
@@ -355,8 +358,7 @@ pub fn export_chat(
         .into_path()
         .map_err(|e| format!("Не удалось определить путь сохранения: {}", e))?;
 
-    fs::write(&path, content)
-        .map_err(|e| format!("Не удалось сохранить диалог: {}", e))?;
+    fs::write(&path, content).map_err(|e| format!("Не удалось сохранить диалог: {}", e))?;
 
     Ok(ExportSettingsResult::saved(path.display().to_string()))
 }
@@ -691,8 +693,9 @@ mod tests {
 
     #[test]
     fn chat_export_file_name_uses_suggested_name_and_sanitizes_it() {
-        let file_name =
-            build_chat_export_file_name(Some("  тест: связи / demo? 2026-04-09 12-30.md  ".to_string()));
+        let file_name = build_chat_export_file_name(Some(
+            "  тест: связи / demo? 2026-04-09 12-30.md  ".to_string(),
+        ));
 
         assert_eq!(file_name, "тест связи demo 2026-04-09 12-30.md");
     }

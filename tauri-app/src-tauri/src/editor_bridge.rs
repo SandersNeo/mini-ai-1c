@@ -11,6 +11,8 @@
 //!   commands/configurator.rs  (Tauri commands)
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, Once};
@@ -35,6 +37,13 @@ const RETRY_DELAY_MS: u64 = 250;
 const WATCHDOG_POLL_MS: u64 = 2_000;
 const WATCHDOG_RESTART_DELAY_MS: u64 = 350;
 const MIN_SELF_CONTAINED_BRIDGE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeLaunchMode {
+    Desktop,
+    Child,
+}
 
 // ── Global bridge process ─────────────────────────────────────────────────────
 
@@ -450,6 +459,11 @@ fn spawn_bridge_child_process(
         command.arg("--fixture").arg(fixture_path);
     }
 
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW.0);
+    }
+
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -478,23 +492,24 @@ fn wait_for_bridge_start(proc: &mut BridgeProc) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn prefer_regular_child_launch() -> bool {
-    if let Ok(value) = std::env::var("MINI_AI_EDITOR_BRIDGE_LAUNCH") {
-        let normalized = value.trim().to_ascii_lowercase();
-        if normalized == "child" || normalized == "stdio" {
-            return true;
-        }
-        if normalized == "desktop" {
-            return false;
-        }
+fn resolve_bridge_launch_mode(env_value: Option<&str>) -> BridgeLaunchMode {
+    match env_value.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if value == "child" || value == "stdio" => BridgeLaunchMode::Child,
+        _ => BridgeLaunchMode::Desktop,
     }
+}
 
-    cfg!(debug_assertions)
+#[cfg(windows)]
+fn configured_bridge_launch_mode() -> BridgeLaunchMode {
+    resolve_bridge_launch_mode(std::env::var("MINI_AI_EDITOR_BRIDGE_LAUNCH").ok().as_deref())
 }
 
 fn spawn_bridge_from_config(config: &BridgeLaunchConfig) -> Result<BridgeProc, String> {
     #[cfg(windows)]
-    if !config.fake_mode && !prefer_regular_child_launch() {
+    let launch_mode = configured_bridge_launch_mode();
+
+    #[cfg(windows)]
+    if !config.fake_mode && matches!(launch_mode, BridgeLaunchMode::Desktop) {
         match spawn_bridge_on_default_desktop(
             &config.exe,
             config.pipe_name.as_ref(),
@@ -524,9 +539,9 @@ fn spawn_bridge_from_config(config: &BridgeLaunchConfig) -> Result<BridgeProc, S
     }
 
     #[cfg(windows)]
-    if !config.fake_mode && prefer_regular_child_launch() {
+    if !config.fake_mode && matches!(launch_mode, BridgeLaunchMode::Child) {
         crate::app_log!(
-            "[Bridge] Using regular child-process launch for EditorBridge (debug/dev mode or MINI_AI_EDITOR_BRIDGE_LAUNCH=child)"
+            "[Bridge] Using hidden child-process launch for EditorBridge (MINI_AI_EDITOR_BRIDGE_LAUNCH=child)"
         );
     }
 
@@ -935,6 +950,8 @@ pub fn diagnose_editor(hwnd: isize) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::{resolve_bridge_launch_mode, BridgeLaunchMode};
     use super::is_launchable_bridge_exe;
     use std::fs;
     use std::path::PathBuf;
@@ -987,5 +1004,22 @@ mod tests {
         assert!(is_launchable_bridge_exe(&exe));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn bridge_launch_mode_defaults_to_hidden_desktop() {
+        assert_eq!(resolve_bridge_launch_mode(None), BridgeLaunchMode::Desktop);
+        assert_eq!(
+            resolve_bridge_launch_mode(Some("desktop")),
+            BridgeLaunchMode::Desktop
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn bridge_launch_mode_accepts_hidden_child_override() {
+        assert_eq!(resolve_bridge_launch_mode(Some("child")), BridgeLaunchMode::Child);
+        assert_eq!(resolve_bridge_launch_mode(Some("stdio")), BridgeLaunchMode::Child);
     }
 }

@@ -11,6 +11,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_editor_bridge_enabled_for_deser() -> bool {
+    true
+}
+
 fn default_configurator_window_title_pattern() -> String {
     "Конфигуратор|1C:Enterprise".to_string()
 }
@@ -167,7 +171,7 @@ pub struct ConfiguratorSettings {
     pub selected_config_name: Option<String>,
     #[serde(default)]
     pub rdp_mode: bool,
-    #[serde(default)]
+    #[serde(default = "default_editor_bridge_enabled_for_deser")]
     pub editor_bridge_enabled: bool,
     #[serde(default)]
     pub editor_bridge_auto_apply: bool,
@@ -591,8 +595,12 @@ pub fn load_settings() -> AppSettings {
     {
         let p = &settings.configurator.window_title_pattern;
         if p == "Конфигуратор" || p == "Конфигуратор|Configurator" {
-            crate::app_log!("[SETTINGS] Migrating window_title_pattern '{}' to bilingual default", p);
-            settings.configurator.window_title_pattern = default_configurator_window_title_pattern();
+            crate::app_log!(
+                "[SETTINGS] Migrating window_title_pattern '{}' to bilingual default",
+                p
+            );
+            settings.configurator.window_title_pattern =
+                default_configurator_window_title_pattern();
             modified = true;
         }
     }
@@ -694,6 +702,24 @@ mod tests {
         assert_eq!(settings.configurator.selected_window_pid, None);
         assert_eq!(settings.configurator.selected_window_title, None);
         assert_eq!(settings.configurator.selected_config_name, None);
+    }
+
+    #[test]
+    fn legacy_configurator_settings_enable_bridge_when_flag_missing() {
+        let mut json = serde_json::to_value(AppSettings::default())
+            .expect("default settings should serialize to json");
+
+        let configurator = json["configurator"]
+            .as_object_mut()
+            .expect("configurator section should exist");
+        configurator.remove("editor_bridge_enabled");
+        configurator.remove("rdp_mode");
+
+        let settings: AppSettings =
+            serde_json::from_value(json).expect("legacy settings should deserialize");
+
+        assert!(settings.configurator.editor_bridge_enabled);
+        assert!(!settings.configurator.rdp_mode);
     }
 
     #[test]

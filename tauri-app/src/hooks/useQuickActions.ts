@@ -22,6 +22,11 @@ import type {
   QuickActionWriteIntent,
 } from '../types/quickActionSessions';
 import { applyDiffWithDiagnostics } from '../utils/diffViewer';
+import {
+  resolveCaptureFromEditorContext,
+  shouldSyncQuickActionToClickTarget,
+} from '../utils/quickActionContext';
+import { buildDescribePrompt } from '../utils/quickActionPrompts';
 
 interface QuickActionEvent {
   action: QuickActionAction;
@@ -376,10 +381,6 @@ function normalizeLineEndings(text: string): string {
   return text.replace(/\r\n/g, '\n');
 }
 
-function restoreLineEndings(template: string, text: string): string {
-  return template.includes('\r\n') ? text.replace(/\n/g, '\r\n') : text;
-}
-
 function trimPreview(text: string): string {
   return text.split('\n').slice(0, 8).join('\n');
 }
@@ -398,21 +399,6 @@ function extractCommentBlock(rawResult: string): string {
   }
 
   return fallback;
-}
-
-function insertCommentBeforeRoutine(code: string, commentBlock: string): string {
-  const normalizedCode = normalizeLineEndings(code);
-  const lines = normalizedCode.split('\n');
-  const routineLine = lines.findIndex(line =>
-    /^\s*(Процедура|Функция|Procedure|Function)\s+/i.test(line),
-  );
-
-  if (routineLine >= 0) {
-    lines.splice(routineLine, 0, commentBlock);
-    return restoreLineEndings(code, lines.join('\n'));
-  }
-
-  return restoreLineEndings(code, `${commentBlock}\n${normalizedCode}`);
 }
 
 function buildDiffFallbackPreview(rawDiff: string, failedCount: number, fuzzyCount: number): string {
@@ -629,27 +615,16 @@ async function captureQuickActionContext(
 ): Promise<CaptureResult> {
   try {
     const ctx = await invoke<EditorContext>('get_editor_context_cmd', { hwnd: confHwnd, skipFocusRestore: action === 'describe' });
-    if (ctx.available) {
-      if (action === 'describe' && ctx.current_method_text) {
-        return { scope: 'current_method', promptCode: ctx.current_method_text, originalCode: ctx.current_method_text, useSelectAll: false, caretLine: ctx.caret_line, methodStartLine: ctx.method_start_line, methodName: ctx.current_method_name, runtimeId: ctx.primary_runtime_id };
-      }
-      if (ctx.has_selection && ctx.selection_text.trim()) {
-        const bslAnalysisCode = ctx.current_method_text || (ctx.module_text.trim() ? ctx.module_text : undefined);
-        return { scope: 'selection', promptCode: ctx.selection_text, originalCode: ctx.selection_text, useSelectAll: false, runtimeId: ctx.primary_runtime_id, bslAnalysisCode };
-      }
-      if (ctx.current_method_text) {
-        return { scope: 'current_method', promptCode: ctx.current_method_text, originalCode: ctx.current_method_text, useSelectAll: false, caretLine: ctx.caret_line, methodStartLine: ctx.method_start_line, methodName: ctx.current_method_name, runtimeId: ctx.primary_runtime_id };
-      }
-      if (ctx.module_text.trim()) {
-        return { scope: 'module', promptCode: ctx.module_text, originalCode: ctx.module_text, useSelectAll: true, runtimeId: ctx.primary_runtime_id };
-      }
+    const resolvedCapture = resolveCaptureFromEditorContext(ctx, action);
+    if (resolvedCapture) {
+      return resolvedCapture;
     }
   } catch (bridgeError) {
     console.warn('[useQuickActions] bridge context failed, falling back:', bridgeError);
   }
 
   if (action === 'describe') {
-    const promptCode = await invoke<string>('get_active_fragment_cmd', {
+    const promptCode = await invoke<string>('get_current_method_text_cmd', {
       hwnd: confHwnd,
       skipFocusRestore: true,
     });
@@ -696,12 +671,26 @@ export function useQuickActions() {
       const isStaleRequest = () => latestRequestIdRef.current !== requestId;
       const { action, confHwnd, task, targetX, targetY, targetChildHwnd } = event.payload;
       const autoApply = settings?.configurator?.editor_bridge_auto_apply ?? false;
+      const rdpMode = settings?.configurator?.rdp_mode ?? false;
+      let overlayTemporarilyHidden = false;
 
       try {
-        const shouldSyncToClickTarget =
+      const shouldSyncToClickTarget =
           typeof targetX === 'number' &&
           typeof targetY === 'number' &&
-          ((action === 'describe') || !(await invoke<boolean>('check_selection_state', { hwnd: confHwnd })));
+          shouldSyncQuickActionToClickTarget(
+            action,
+            await invoke<boolean>('check_selection_state', { hwnd: confHwnd }),
+          );
+
+        if (shouldSyncToClickTarget && rdpMode) {
+          try {
+            await invoke('hide_overlay', { confHwnd, restoreFocus: false });
+            overlayTemporarilyHidden = true;
+          } catch (hideError) {
+            console.warn('[useQuickActions] failed to hide overlay before RDP sync:', hideError);
+          }
+        }
 
         if (shouldSyncToClickTarget) {
           try {
@@ -717,6 +706,14 @@ export function useQuickActions() {
         }
 
         const capture = await captureQuickActionContext(confHwnd, action);
+        if (overlayTemporarilyHidden) {
+          try {
+            await invoke('show_hidden_overlay');
+          } catch (showError) {
+            console.warn('[useQuickActions] failed to restore overlay after RDP sync:', showError);
+          }
+          overlayTemporarilyHidden = false;
+        }
         if (isStaleRequest()) return;
 
         if (action === 'explain') {
@@ -827,17 +824,14 @@ export function useQuickActions() {
         let applySupport: ConfiguratorApplySupport | undefined;
 
         if (action === 'describe') {
-          const commentBlock = extractCommentBlock(rawResult);
-          if (effectiveCapture.scope === 'selection') {
-            resultCode = insertCommentBeforeRoutine(effectiveCapture.promptCode, commentBlock);
-            writeIntent = 'replace_selection';
-          } else if (effectiveCapture.scope === 'current_method') {
-            resultCode = commentBlock;
-            writeIntent = 'insert_before_current_method';
-          } else {
-            resultCode = insertCommentBeforeRoutine(effectiveCapture.promptCode, commentBlock);
-            writeIntent = 'replace_module';
+          if (effectiveCapture.scope !== 'current_method') {
+            throw new Error(
+              'Описание можно добавлять только к текущей процедуре или функции. Повторите действие внутри нужного метода.',
+            );
           }
+          const commentBlock = extractCommentBlock(rawResult);
+          resultCode = commentBlock;
+          writeIntent = 'insert_before_current_method';
           previewText = commentBlock;
         } else if (action === 'review') {
           resultCode = rawResult;
@@ -939,6 +933,13 @@ export function useQuickActions() {
             targetChildHwnd,
           } satisfies OverlayStateUpdate,
         });
+        if (overlayTemporarilyHidden) {
+          try {
+            await invoke('show_hidden_overlay');
+          } catch (showError) {
+            console.warn('[useQuickActions] failed to restore overlay after sync error:', showError);
+          }
+        }
       }
     });
 
@@ -998,64 +999,10 @@ function buildPrompt(
   diagnostics?: string,
 ): string {
   if (action === 'describe') {
-    return `Ты — опытный 1С-разработчик. Сгенерируй комментарий к процедуре или функции строго по стандарту 1С «Описание процедур и функций» (#std453).
-
-Требования к результату:
-- Верни только блок комментария перед объявлением метода.
-- Каждая строка результата должна начинаться с //.
-- Если комментарий не помещается в одну строку, делай перенос по словам на следующую строку.
-- Каждая перенесенная строка тоже должна начинаться с //.
-- Ни одна строка готового комментария не должна превышать 120 символов.
-- Секция "Описание" обязательна и должна объяснять назначение метода так, чтобы был понятен сценарий использования без чтения реализации.
-- Описание должно начинаться с глагола.
-- Не начинай описание со слов "Процедура", "Функция" и не повторяй имя метода, если это не добавляет смысла.
-- Не пиши тавтологии и очевидные фразы, которые просто повторяют название метода или то, что это обработчик события.
-- Секция "Параметры:" добавляется только если у метода есть параметры.
-- Для каждого параметра используй формат:
-//  ИмяПараметра - Тип1, Тип2 - осмысленное описание
-- Тип параметра обязателен. Если точный тип неочевиден, определи наиболее вероятный по коду.
-- Секция "Возвращаемое значение:" добавляется только для функции.
-- Для простого возвращаемого значения используй формат:
-//  Тип - описание
-- Для составного возвращаемого значения каждый вариант пиши с новой строки:
-//  - Тип - описание
-- Не добавляй секцию "Пример".
-- Не возвращай код метода, сигнатуру метода, markdown или пояснения вне комментария.
-
-Код:
-${code}
-
-Верни только готовый комментарий по стандарту 1С.`;
+    return buildDescribePrompt(code);
   }
 
   switch (action) {
-    case 'describe':
-      return `Ты — опытный 1С-разработчик. Сгенерируй комментарий к процедуре или функции строго по стандарту 1С «Описание процедур и функций» (#std453).
-
-Требования к результату:
-- Верни только блок комментария перед объявлением метода.
-- Каждая строка результата должна начинаться с //.
-- Секция "Описание" обязательна и должна объяснять назначение метода так, чтобы был понятен сценарий использования без чтения реализации.
-- Описание должно начинаться с глагола.
-- Не начинай описание со слов "Процедура", "Функция" и не повторяй имя метода, если это не добавляет смысла.
-- Не пиши тавтологии и очевидные фразы, которые просто повторяют название метода или то, что это обработчик события.
-- Секция "Параметры:" добавляется только если у метода есть параметры.
-- Для каждого параметра используй формат:
-//  ИмяПараметра - Тип1, Тип2 - осмысленное описание
-- Тип параметра обязателен. Если точный тип неочевиден, определи наиболее вероятный по коду.
-- Секция "Возвращаемое значение:" добавляется только для функции.
-- Для простого возвращаемого значения используй формат:
-//  Тип - описание
-- Для составного возвращаемого значения каждый вариант пиши с новой строки:
-//  - Тип - описание
-- Не добавляй секцию "Пример".
-- Не возвращай код метода, сигнатуру метода, markdown или пояснения вне комментария.
-
-Код:
-${code}
-
-Верни только готовый комментарий по стандарту 1С.`;
-
     case 'elaborate':
       return `Ты — опытный 1С-разработчик. Доработай процедуру/функцию.
 Задача: ${task ?? 'улучши код'}

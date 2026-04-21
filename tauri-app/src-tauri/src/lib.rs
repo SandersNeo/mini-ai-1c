@@ -32,7 +32,7 @@ use commands::*;
 
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
 
@@ -75,6 +75,7 @@ pub fn run() {
             install_editor_bridge_cmd,
             get_code_from_configurator,
             get_active_fragment_cmd,
+            get_current_method_text_cmd,
             get_editor_context_cmd,
             get_configurator_apply_support_cmd,
             diagnose_editor_bridge_cmd,
@@ -158,8 +159,14 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(move |_tray, event| {
                     match event {
-                        // Single or double left click — show/focus window
-                        TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. } => {
+                        // Left click or double click — show/focus window
+                        // NOTE: do NOT match right-click here — set_focus() would steal focus
+                        // from the tray popup menu and cause it to close instantly (Windows bug).
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                        | TrayIconEvent::DoubleClick { .. } => {
                             if let Some(window) = tray_handle.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
@@ -236,6 +243,7 @@ pub fn run() {
             {
                 let current_settings = crate::settings::load_settings();
                 crate::configurator::set_rdp_mode(current_settings.configurator.rdp_mode);
+                crate::mouse_hook::set_rdp_mode(current_settings.configurator.rdp_mode);
                 crate::mouse_hook::set_editor_bridge_enabled(
                     current_settings.configurator.editor_bridge_enabled,
                 );
