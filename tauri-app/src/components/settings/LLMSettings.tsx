@@ -480,7 +480,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                         <div className="space-y-4">
                             {editForm.provider === 'QwenCli' && (
                                 <div className="p-4 bg-zinc-950/50 rounded-lg border border-zinc-800 space-y-4">
-                                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                                    <div className="qwen-paid-notice p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                                         <p className="text-xs text-amber-400 font-medium leading-relaxed">
                                             ⚠️ Qwen Code CLI стал платным с апреля 2025 — бесплатный OAuth-доступ более не работает.
                                         </p>
