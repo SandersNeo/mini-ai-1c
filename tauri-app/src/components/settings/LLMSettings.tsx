@@ -480,6 +480,30 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                         <div className="space-y-4">
                             {editForm.provider === 'QwenCli' && (
                                 <div className="p-4 bg-zinc-950/50 rounded-lg border border-zinc-800 space-y-4">
+                                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                                        <p className="text-xs text-amber-400 font-medium leading-relaxed">
+                                            ⚠️ Qwen Code CLI стал платным с апреля 2025 — бесплатный OAuth-доступ более не работает.
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            <a
+                                                href="https://dashscope.aliyun.com/"
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex items-center gap-1 text-[10px] text-amber-400/80 hover:text-amber-300 underline underline-offset-2 transition-colors"
+                                            >
+                                                <ExternalLink className="w-3 h-3" /> Купить подписку (DashScope)
+                                            </a>
+                                            <span className="text-[10px] text-zinc-600">·</span>
+                                            <a
+                                                href="https://openrouter.ai/models?q=qwen"
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex items-center gap-1 text-[10px] text-amber-400/80 hover:text-amber-300 underline underline-offset-2 transition-colors"
+                                            >
+                                                <ExternalLink className="w-3 h-3" /> Qwen через OpenRouter
+                                            </a>
+                                        </div>
+                                    </div>
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <label className="text-xs text-zinc-500 uppercase font-bold">Authentication</label>
