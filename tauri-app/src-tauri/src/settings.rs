@@ -346,6 +346,7 @@ pub enum CodeGenerationMode {
 pub enum PromptBehaviorPreset {
     Project,
     Maintenance,
+    Cli,
 }
 
 impl Default for PromptBehaviorPreset {
