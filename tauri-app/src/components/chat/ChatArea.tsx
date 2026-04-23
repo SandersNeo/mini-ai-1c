@@ -188,6 +188,23 @@ function WaitingStatusNotice({ chatStatus }: { chatStatus: string }) {
     );
 }
 
+function formatElapsed(ms: number): string {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}с`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem > 0 ? `${m}м ${rem}с` : `${m}м`;
+}
+
+function ElapsedTimer({ startTime }: { startTime: number }) {
+    const [elapsed, setElapsed] = useState(() => Date.now() - startTime);
+    useEffect(() => {
+        const id = setInterval(() => setElapsed(Date.now() - startTime), 1000);
+        return () => clearInterval(id);
+    }, [startTime]);
+    return <span className="font-mono text-zinc-500 text-[10px] tabular-nums">{formatElapsed(elapsed)}</span>;
+}
+
 type ChatCliProvider = 'qwen' | 'codex';
 
 function getCliProviderType(provider: string): ChatCliProvider | null {
@@ -294,7 +311,7 @@ export function ChatArea({
     onActiveDiffChange,
     activeDiffContent
 }: ChatAreaProps) {
-    const { messages, compressionIndicator, isLoading, chatStatus, currentIteration, messageQueue, sendMessage, stopChat, editAndRerun, addSystemMessage, removeSystemMessage, injectMessage, removeQueuedMessage, updateQueuedMessage, clearQueue, clearChat } = useChat();
+    const { messages, compressionIndicator, isLoading, streamStartTime, chatStatus, currentIteration, messageQueue, sendMessage, stopChat, editAndRerun, addSystemMessage, removeSystemMessage, injectMessage, removeQueuedMessage, updateQueuedMessage, clearQueue, clearChat } = useChat();
     const { profiles, activeProfileId, activeProfile, setActiveProfile } = useProfiles();
     const isNaparnikActive = activeProfile?.provider === 'OneCNaparnik';
     const { settings, updateSettings } = useSettings();
@@ -1297,9 +1314,19 @@ export function ChatArea({
                                                                             Шаг {currentIteration}
                                                                         </span>
                                                                     )}
+                                                                    {streamStartTime && <ElapsedTimer startTime={streamStartTime} />}
                                                                 </div>
                                                                 <WaitingStatusNotice chatStatus={chatStatus} />
                                                             </div>
+                                                        </div>
+                                                    )}
+                                                    {/* Время ответа — заметный бейдж после завершения */}
+                                                    {!isLoading && msg.responseTime && (
+                                                        <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-800/30">
+                                                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-md border border-zinc-700/50 bg-zinc-800/40 text-[10px] font-mono tabular-nums text-zinc-500">
+                                                                <svg className="w-3 h-3 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                                                Ответ за {formatElapsed(msg.responseTime)}
+                                                            </span>
                                                         </div>
                                                     )}
                                                 </>
@@ -1480,6 +1507,7 @@ export function ChatArea({
                                                 Шаг {currentIteration}
                                             </span>
                                         )}
+                                        {streamStartTime && <ElapsedTimer startTime={streamStartTime} />}
                                     </div>
                                     <WaitingStatusNotice chatStatus={chatStatus} />
                                 </div>

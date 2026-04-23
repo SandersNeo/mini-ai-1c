@@ -16,6 +16,8 @@ export interface ToolCall {
     arguments: string;
     status: 'pending' | 'executing' | 'done' | 'error' | 'rejected';
     result?: string;
+    startedAt?: number;
+    duration?: number;
 }
 
 export interface BSLDiagnostic {
@@ -42,6 +44,7 @@ export interface ChatMessage {
     parts?: MessagePart[];
     diagnostics?: BSLDiagnostic[];
     timestamp: number;
+    responseTime?: number;
     variant?: 'warning' | 'info' | 'compression';
     includeInPayload?: boolean;
 }
@@ -198,6 +201,7 @@ interface ChatContextType {
     messages: ChatMessage[];
     compressionIndicator: CompressionIndicator | null;
     isLoading: boolean;
+    streamStartTime: number | null;
     chatStatus: string;
     currentIteration: number;
     messageQueue: QueuedMessage[];
@@ -241,6 +245,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     });
     const [compressionIndicator, setCompressionIndicator] = useState<CompressionIndicator | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [streamStartTime, setStreamStartTime] = useState<number | null>(null);
+    const streamStartTimeRef = useRef<number | null>(null);
     const [chatStatus, setChatStatus] = useState('');
     const [currentIteration, setCurrentIteration] = useState(0);
     const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
@@ -408,7 +414,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                                 id: event.payload.id,
                                 name: event.payload.name,
                                 arguments: '',
-                                status: 'pending' as const
+                                status: 'pending' as const,
+                                startedAt: Date.now()
                             };
 
                             // Ищем последнее assistant-сообщение, не пересекая границу хода (user-сообщение)
@@ -495,10 +502,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
                             const last = prev[targetIdx];
                             let matched = false;
+                            const now = Date.now();
                             const toolCalls = last.toolCalls!.map(tc => {
                                 if (tc.id === event.payload.id) {
                                     matched = true;
-                                    return { ...tc, status: event.payload.status, result: event.payload.result };
+                                    return { ...tc, status: event.payload.status, result: event.payload.result, duration: tc.startedAt ? now - tc.startedAt : undefined };
                                 }
                                 return tc;
                             });
@@ -510,7 +518,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                                     { ...last, toolCalls: last.toolCalls!.map(tc => {
                                         if (!found && (tc.status === 'pending' || tc.status === 'executing')) {
                                             found = true;
-                                            return { ...tc, id: event.payload.id, status: event.payload.status, result: event.payload.result };
+                                            return { ...tc, id: event.payload.id, status: event.payload.status, result: event.payload.result, duration: tc.startedAt ? now - tc.startedAt : undefined };
                                         }
                                         return tc;
                                     })},
@@ -557,6 +565,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
                     listen('chat-done', () => {
                         flushNow();
+                        const elapsed = streamStartTimeRef.current ? Date.now() - streamStartTimeRef.current : null;
+                        streamStartTimeRef.current = null;
+                        setStreamStartTime(null);
                         setIsLoading(false);
                         setChatStatus('');
                         setCurrentIteration(0);
@@ -577,6 +588,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                                 !filtered[filtered.length - 1].toolCalls?.length
                             ) {
                                 filtered.pop();
+                            }
+                            // Attach responseTime to last assistant message
+                            if (elapsed && filtered.length > 0) {
+                                const lastIdx = filtered.length - 1;
+                                if (filtered[lastIdx].role === 'assistant') {
+                                    filtered[lastIdx] = { ...filtered[lastIdx], responseTime: elapsed };
+                                }
                             }
                             return filtered;
                         });
@@ -725,6 +743,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setCompressionIndicator(null);
         currentBatchToolIds.current = [];
         setIsLoading(true);
+        streamStartTimeRef.current = Date.now();
+        setStreamStartTime(streamStartTimeRef.current);
 
         // 2. Backend: Prepare payload
         let contextPayload = content;
@@ -897,6 +917,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setCompressionIndicator(null);
         currentBatchToolIds.current = [];
         setIsLoading(true);
+        streamStartTimeRef.current = Date.now();
+        setStreamStartTime(streamStartTimeRef.current);
 
         // 4. Prepare payload
         let contextPayload = newContent;
@@ -966,6 +988,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             messages,
             compressionIndicator,
             isLoading,
+            streamStartTime,
             chatStatus,
             currentIteration,
             messageQueue,
