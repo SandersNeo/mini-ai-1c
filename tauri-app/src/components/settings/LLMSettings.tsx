@@ -482,7 +482,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                 <div className="p-4 bg-zinc-950/50 rounded-lg border border-zinc-800 space-y-4">
                                     <div className="qwen-paid-notice p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                                         <p className="text-xs text-amber-400 font-medium leading-relaxed">
-                                            ⚠️ Qwen Code CLI стал платным с апреля 2025 — бесплатный OAuth-доступ более не работает.
+                                            ⚠️ Qwen Code CLI стал платным с апреля 2026 — бесплатный OAuth-доступ более не работает.
                                         </p>
                                         <div className="mt-2 flex flex-wrap gap-2">
                                             <a
