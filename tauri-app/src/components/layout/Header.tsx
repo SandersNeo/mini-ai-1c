@@ -1,4 +1,4 @@
-import { Settings, Maximize2, Minimize2, Pin, MessageSquare, Columns, Code2, AlertTriangle, Bell, X, Info, Sun, Moon, History, Download } from 'lucide-react';
+import { Settings, Maximize2, Minimize2, Pin, MessageSquare, Columns, Code2, AlertTriangle, Bell, X, Info, Sun, Moon, History, Download, MessageSquarePlus } from 'lucide-react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 import { useConfigurator } from '../../contexts/ConfiguratorContext';
@@ -392,6 +392,13 @@ export function Header({
                         <Download className="w-4 h-4" />
                     </button>
                 )}
+                <button
+                    onClick={onNewChat}
+                    className="p-2 hover:bg-[#27272a] rounded-lg transition-colors text-zinc-400 hover:text-zinc-200"
+                    title="Новый чат"
+                >
+                    <MessageSquarePlus className="w-4 h-4" />
+                </button>
                 <div ref={chatHistoryRef} className="relative">
                     <button
                         data-testid="chat-history-trigger"
