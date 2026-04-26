@@ -21,7 +21,8 @@ use crate::llm_profiles::{
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const CODEX_RESPONSES_ENDPOINT: &str = "/responses";
 const CODEX_USER_AGENT: &str = "codex-cli/0.1.0 (Windows NT 10.0; x86_64) vscode/1.111.0";
-const DEFAULT_CODEX_INSTRUCTIONS: &str = "You are Codex, a coding assistant running inside Mini AI 1C.\n\
+const DEFAULT_CODEX_INSTRUCTIONS: &str =
+    "You are Codex, a coding assistant running inside Mini AI 1C.\n\
 IMPORTANT: Always output raw characters — never use HTML entities. \
 Write `<`, `>`, `&`, `\"`, `'` literally. \
 Do NOT write `&lt;`, `&gt;`, `&amp;`, `&quot;`, `&#39;` or any other HTML escape sequences. \
@@ -170,6 +171,12 @@ fn sanitize_tool_name(name: &str) -> String {
 /// - `role: "assistant"` with tool_calls → one `function_call` item per call
 /// - `role: "tool"` → `function_call_output` item
 fn messages_to_codex_payload(messages: &[ApiMessage]) -> (String, Vec<CodexInputItem>) {
+    let completed_tool_call_ids: std::collections::HashSet<String> = messages
+        .iter()
+        .filter(|msg| msg.role == "tool")
+        .filter_map(|msg| msg.tool_call_id.clone())
+        .collect();
+    let mut emitted_tool_call_ids = std::collections::HashSet::new();
     let mut instructions_parts = Vec::new();
     let mut input = Vec::new();
 
@@ -204,6 +211,11 @@ fn messages_to_codex_payload(messages: &[ApiMessage]) -> (String, Vec<CodexInput
                 // Tool calls → individual function_call items
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
+                        if !completed_tool_call_ids.contains(&tc.id) {
+                            continue;
+                        }
+
+                        emitted_tool_call_ids.insert(tc.id.clone());
                         input.push(CodexInputItem::FunctionCall(CodexFunctionCall {
                             r#type: "function_call".to_string(),
                             call_id: tc.id.clone(),
@@ -217,6 +229,10 @@ fn messages_to_codex_payload(messages: &[ApiMessage]) -> (String, Vec<CodexInput
             "tool" => {
                 // Tool result
                 if let Some(call_id) = &msg.tool_call_id {
+                    if !emitted_tool_call_ids.contains(call_id) {
+                        continue;
+                    }
+
                     let output = msg.content.clone().unwrap_or_default();
                     input.push(CodexInputItem::FunctionCallOutput(
                         CodexFunctionCallOutput {
@@ -475,7 +491,10 @@ pub async fn quick_codex_invoke(prompt: String) -> Result<String, String> {
             for line in event_str.lines() {
                 if let Some(t) = line.strip_prefix("event: ") {
                     event_type = t.trim().to_string();
-                } else if let Some(d) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                } else if let Some(d) = line
+                    .strip_prefix("data: ")
+                    .or_else(|| line.strip_prefix("data:"))
+                {
                     event_data = d.trim().to_string();
                 }
             }
@@ -704,7 +723,10 @@ pub async fn stream_codex_completion(
             for line in event_str.lines() {
                 if let Some(t) = line.strip_prefix("event: ") {
                     event_type = t.trim().to_string();
-                } else if let Some(d) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                } else if let Some(d) = line
+                    .strip_prefix("data: ")
+                    .or_else(|| line.strip_prefix("data:"))
+                {
                     event_data = d.trim().to_string();
                 }
             }
@@ -800,8 +822,9 @@ pub async fn stream_codex_completion(
                         if item_type == "function_call" {
                             let call_id = item["call_id"].as_str().unwrap_or("").to_string();
                             let name = item["name"].as_str().unwrap_or("").to_string();
-                            let arguments =
-                                normalize_codex_tool_arguments(item["arguments"].as_str().unwrap_or("{}"));
+                            let arguments = normalize_codex_tool_arguments(
+                                item["arguments"].as_str().unwrap_or("{}"),
+                            );
 
                             if !call_id.is_empty() && !name.is_empty() {
                                 accumulated_tool_calls.push(ToolCall {
@@ -911,15 +934,15 @@ pub async fn stream_codex_completion(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_codex_request, build_headers, messages_to_codex_payload, resolve_codex_model,
-        normalize_codex_tool_arguments, resolve_codex_stream_timeout_secs, CodexInputItem,
-        DEFAULT_CODEX_INSTRUCTIONS,
+        build_codex_request, build_headers, messages_to_codex_payload,
+        normalize_codex_tool_arguments, resolve_codex_model, resolve_codex_stream_timeout_secs,
+        CodexInputItem, DEFAULT_CODEX_INSTRUCTIONS,
     };
-    use reqwest::header::ACCEPT_ENCODING;
-    use crate::ai::models::ApiMessage;
+    use crate::ai::models::{ApiMessage, ToolCall, ToolCallFunction};
     use crate::llm_profiles::{
         LLMProfile, LLMProvider, DEFAULT_CODEX_REASONING_EFFORT, DEFAULT_CODEX_STREAM_TIMEOUT_SECS,
     };
+    use reqwest::header::ACCEPT_ENCODING;
     use serde_json::Value;
 
     #[test]
@@ -976,6 +999,71 @@ mod tests {
         assert_eq!(instructions, DEFAULT_CODEX_INSTRUCTIONS);
         assert_eq!(input.len(), 1);
         assert!(matches!(&input[0], CodexInputItem::Message(_)));
+    }
+
+    #[test]
+    fn messages_to_codex_payload_skips_orphan_assistant_tool_calls() {
+        let messages = vec![
+            ApiMessage {
+                role: "user".to_string(),
+                content: Some("fix it".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ApiMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_orphan".to_string(),
+                    r#type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "check_bsl_syntax".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        let (_, input) = messages_to_codex_payload(&messages);
+
+        assert_eq!(input.len(), 1);
+        assert!(matches!(&input[0], CodexInputItem::Message(_)));
+    }
+
+    #[test]
+    fn messages_to_codex_payload_keeps_matched_tool_call_pairs() {
+        let messages = vec![
+            ApiMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_done".to_string(),
+                    r#type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "check_bsl_syntax".to_string(),
+                        arguments: "{\"code\":\"Сообщить(\\\"ok\\\");\"}".to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                name: None,
+            },
+            ApiMessage {
+                role: "tool".to_string(),
+                content: Some("{\"ok\":true}".to_string()),
+                tool_calls: None,
+                tool_call_id: Some("call_done".to_string()),
+                name: Some("check_bsl_syntax".to_string()),
+            },
+        ];
+
+        let (_, input) = messages_to_codex_payload(&messages);
+
+        assert_eq!(input.len(), 2);
+        assert!(matches!(&input[0], CodexInputItem::FunctionCall(_)));
+        assert!(matches!(&input[1], CodexInputItem::FunctionCallOutput(_)));
     }
 
     #[test]

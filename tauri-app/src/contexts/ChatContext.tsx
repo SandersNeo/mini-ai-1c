@@ -167,10 +167,20 @@ function buildPayloadMessages(
                 : (m.payloadContent ?? m.content ?? '');
 
             if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+                const completedToolCalls = m.toolCalls.filter(tc =>
+                    tc.id && tc.result !== undefined && (tc.status === 'done' || tc.status === 'error')
+                );
+
+                if (completedToolCalls.length === 0) {
+                    return content.trim()
+                        ? [{ role: m.role as api.ChatMessage['role'], content }]
+                        : [];
+                }
+
                 const msg: api.ChatMessage = {
                     role: 'assistant',
                     content,
-                    tool_calls: m.toolCalls.map(tc => ({
+                    tool_calls: completedToolCalls.map(tc => ({
                         id: tc.id,
                         type: 'function',
                         function: {
@@ -179,8 +189,7 @@ function buildPayloadMessages(
                         }
                     }))
                 };
-                const toolResults: api.ChatMessage[] = m.toolCalls
-                    .filter(tc => tc.result !== undefined && tc.id)
+                const toolResults: api.ChatMessage[] = completedToolCalls
                     .map(tc => ({
                         role: 'tool' as const,
                         content: tc.result || '',
