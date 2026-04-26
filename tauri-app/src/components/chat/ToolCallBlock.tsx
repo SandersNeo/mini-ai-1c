@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ToolCall } from '../../contexts/ChatContext';
-import { CheckCircle, AlertCircle, XCircle, Terminal, ChevronDown, ChevronRight, Loader2, Clock } from 'lucide-react';
+import { CheckCircle, AlertCircle, XCircle, Terminal, ChevronRight, Loader2, Clock } from 'lucide-react';
 
 interface ToolCallBlockProps {
     toolCall: ToolCall;
@@ -83,7 +83,6 @@ const ToolCallBlock: React.FC<ToolCallBlockProps> = ({ toolCall }) => {
                     >
                         <Clock size={10} className="opacity-60" />
                         <span>{formatDuration(toolCall.duration)}</span>
-                        {hasContent && <ChevronDown size={10} className={`opacity-50 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />}
                     </button>
                 )}
             </div>
