@@ -30,6 +30,7 @@ const PROVIDERS = [
     { value: 'LMStudio', label: 'LM Studio (Local)', defaultModel: '', defaultUrl: 'http://localhost:1234/v1', type: 'standard' },
     { value: 'QwenCli', label: 'Qwen Code (CLI)', defaultModel: 'coder-model', defaultUrl: 'https://portal.qwen.ai/v1', type: 'cli' },
     { value: 'CodexCli', label: 'OpenAI Codex (CLI)', defaultModel: 'gpt-5.4', defaultUrl: 'https://chatgpt.com/backend-api/codex', type: 'cli' },
+    { value: 'MiniMax', label: 'MiniMax', defaultModel: 'MiniMax-M2.7', defaultUrl: 'https://api.minimax.io/v1', type: 'standard' },
     { value: 'Custom', label: 'Custom / Other', defaultModel: '', defaultUrl: '', type: 'standard' },
     { value: 'OneCNaparnik', label: '1С:Напарник', defaultModel: 'naparnik', defaultUrl: 'https://code.1c.ai', type: 'naparnik' },
 ];
@@ -129,6 +130,20 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                         setModelList(sortModels(res));
                     }).catch(e => {
                         console.error('[LLMSettings] Failed to auto-fetch CLI models:', e);
+                    }).finally(() => {
+                        setLoadingModels(false);
+                    });
+                } else if (p.provider === 'MiniMax') {
+                    // MiniMax: auto-fetch static fallback list (no key needed for static models)
+                    setLoadingModels(true);
+                    invoke<any[]>('fetch_models_from_provider', {
+                        providerId: p.provider,
+                        baseUrl: p.base_url || 'https://api.minimax.io/v1',
+                        apiKey: ''
+                    }).then(res => {
+                        setModelList(sortModels(res));
+                    }).catch(e => {
+                        console.error('[LLMSettings] Failed to auto-fetch MiniMax models:', e);
                     }).finally(() => {
                         setLoadingModels(false);
                     });
@@ -407,6 +422,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                             </button>
                         </div>
                     </div>
+
                 </div>
             </div>
 
@@ -721,7 +737,44 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                                 </div>
                             )}
 
-                        {editForm.provider !== 'QwenCli' && editForm.provider !== 'CodexCli' && editForm.provider !== 'OneCNaparnik' && (
+                            {editForm.provider === 'MiniMax' && (
+                                <div className="p-4 bg-zinc-950/50 rounded-lg border border-violet-900/40 space-y-3">
+                                    <label className="text-xs text-zinc-500 uppercase font-bold">API Key MiniMax</label>
+                                    <input
+                                        ref={apiKeyInputRef}
+                                        type="password"
+                                        className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 h-9 text-sm focus:border-violet-500 outline-none placeholder-zinc-700 text-zinc-200"
+                                        placeholder={editForm.api_key_encrypted ? "•••••••••••• (Encrypted)" : "eyJ..."}
+                                        value={newApiKey}
+                                        onChange={e => setNewApiKey(e.target.value)}
+                                    />
+                                    <div>
+                                        <label className="text-xs text-zinc-500 uppercase font-bold px-0.5">Base URL</label>
+                                        <input
+                                            className="w-full mt-1 bg-zinc-950 border border-zinc-800 rounded-md px-3 h-9 text-sm focus:border-violet-500 outline-none font-mono text-zinc-400"
+                                            value={editForm.base_url || 'https://api.minimax.io/v1'}
+                                            onChange={e => setEditForm({ ...editForm, base_url: e.target.value })}
+                                        />
+                                    </div>
+                                    <p className="text-[10px] text-zinc-500 leading-relaxed flex items-start gap-1.5">
+                                        <Info className="w-3 h-3 shrink-0 mt-0.5" />
+                                        <span>
+                                            Получить API key:{' '}
+                                            <button
+                                                type="button"
+                                                onClick={() => openUrl('https://www.minimax.io/platform')}
+                                                className="text-violet-400 hover:text-violet-300 inline-flex items-center gap-0.5 transition-colors"
+                                            >
+                                                minimax.io/platform <ExternalLink className="w-2.5 h-2.5" />
+                                            </button>
+                                            {' '}→ API Keys.
+                                            Ключ хранится зашифрованным в системном keychain.
+                                        </span>
+                                    </p>
+                                </div>
+                            )}
+
+                        {editForm.provider !== 'QwenCli' && editForm.provider !== 'CodexCli' && editForm.provider !== 'OneCNaparnik' && editForm.provider !== 'MiniMax' && (
                                 <div>
                                     <label className="text-xs text-zinc-500 uppercase font-bold px-1">API Key</label>
                                     <input
@@ -736,7 +789,7 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                             )}
                         </div>
 
-                        {PROVIDERS.find(p => p.value === editForm.provider)?.type !== 'cli' && editForm.provider !== 'CodexCli' && editForm.provider !== 'OneCNaparnik' && (
+                        {PROVIDERS.find(p => p.value === editForm.provider)?.type !== 'cli' && editForm.provider !== 'CodexCli' && editForm.provider !== 'OneCNaparnik' && editForm.provider !== 'MiniMax' && (
                             <div>
                                 <label className="text-xs text-zinc-500 uppercase font-bold px-1">Base URL</label>
                                 <input

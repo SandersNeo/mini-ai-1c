@@ -821,7 +821,23 @@ pub async fn stream_chat_completion(
             .next()
             .ok_or("Empty response from API")?;
         let content = choice.message.content.unwrap_or_default();
-        let tool_calls = choice.message.tool_calls.unwrap_or_default();
+        let raw_tool_calls = choice.message.tool_calls.unwrap_or_default();
+        // Convert NonStreamToolCall → ToolCall, normalising arguments to valid JSON string.
+        let tool_calls: Vec<ToolCall> = raw_tool_calls
+            .into_iter()
+            .map(|tc| ToolCall {
+                id: tc.id,
+                r#type: tc.r#type,
+                function: ToolCallFunction {
+                    name: tc.function.name,
+                    arguments: tc
+                        .function
+                        .arguments
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "{}".to_string()),
+                },
+            })
+            .collect();
         if !content.is_empty() {
             let _ = app_handle.emit("chat-status", "Выполнение...");
             let _ = app_handle.emit("chat-chunk", content.clone());
@@ -963,6 +979,16 @@ pub async fn stream_chat_completion(
                                 );
                             } else {
                                 crate::app_log!("[AI][RESP] ⚠️ HALLUCINATION DETECTED: text_only but mentions tools {:?} — no actual tool_calls!", hallucinated);
+                            }
+                        }
+                        // Ensure all accumulated arguments are valid JSON (provider safety).
+                        for tc in &mut accumulated_tool_calls {
+                            if serde_json::from_str::<serde_json::Value>(&tc.function.arguments).is_err() {
+                                crate::app_log!(
+                                    "[AI][WARN] tool_call {} has invalid JSON arguments, resetting to {{}}",
+                                    tc.id
+                                );
+                                tc.function.arguments = "{}".to_string();
                             }
                         }
                         return Ok(ApiMessage {

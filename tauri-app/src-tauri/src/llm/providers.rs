@@ -27,6 +27,93 @@ const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/hawkxtreme/mini-ai-1c/main/registry/models.json"; // Placeholder
                                                                                          // const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 
+pub fn static_minimax_models() -> Vec<Model> {
+    vec![
+        Model {
+            id: "MiniMax-M2.7".into(),
+            name: "MiniMax M2.7".into(),
+            context_window: 1_000_000,
+            description: Some("MiniMax flagship multimodal reasoning model, 1M context.".into()),
+            cost_in: Some(0.30),
+            cost_out: Some(1.10),
+        },
+        Model {
+            id: "MiniMax-Text-01".into(),
+            name: "MiniMax Text-01".into(),
+            context_window: 1_000_000,
+            description: Some("MiniMax long-context text model, 1M context.".into()),
+            cost_in: Some(0.20),
+            cost_out: Some(1.10),
+        },
+        Model {
+            id: "abab7-preview".into(),
+            name: "ABAB7 Preview".into(),
+            context_window: 245_760,
+            description: Some("MiniMax ABAB7 preview model.".into()),
+            cost_in: None,
+            cost_out: None,
+        },
+    ]
+}
+
+/// Fetch MiniMax models: try live /v1/models API, fallback to static list.
+async fn fetch_minimax_models(base_url: &str, api_key: &str) -> Result<Vec<Model>, String> {
+    if api_key.trim().is_empty() {
+        return Ok(static_minimax_models());
+    }
+
+    let client = Client::new();
+    let trimmed = base_url.trim_end_matches('/');
+    let url = if trimmed.ends_with("/v1") {
+        format!("{}/models", trimmed)
+    } else {
+        format!("{}/v1/models", trimmed)
+    };
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body = r.text().await.unwrap_or_default();
+            #[derive(Deserialize)]
+            struct MiniMaxModel {
+                id: String,
+                context_window: Option<u32>,
+            }
+            #[derive(Deserialize)]
+            struct MiniMaxResponse {
+                data: Vec<MiniMaxModel>,
+            }
+            if let Ok(parsed) = serde_json::from_str::<MiniMaxResponse>(&body) {
+                let models: Vec<Model> = parsed
+                    .data
+                    .into_iter()
+                    .map(|m| {
+                        let cw = m.context_window.unwrap_or(1_000_000);
+                        Model {
+                            id: m.id.clone(),
+                            name: m.id.clone(),
+                            context_window: cw,
+                            description: None,
+                            cost_in: None,
+                            cost_out: None,
+                        }
+                    })
+                    .collect();
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            Ok(static_minimax_models())
+        }
+        _ => Ok(static_minimax_models()),
+    }
+}
+
 pub fn static_codex_models() -> Vec<Model> {
     vec![
         Model {
@@ -135,6 +222,11 @@ pub async fn fetch_models_from_api(
 
     if provider_id == "CodexCli" {
         return Ok(static_codex_models());
+    }
+
+    // MiniMax: try live API first, fallback to static list on error
+    if provider_id == "MiniMax" {
+        return fetch_minimax_models(base_url, api_key).await;
     }
 
     let requires_api_key = matches!(
