@@ -377,6 +377,10 @@ pub async fn stream_chat_completion(
     } else if matches!(profile.provider, LLMProvider::LMStudio) {
         // Qwen3 thinking models need large token budget to finish thinking before producing content
         profile.max_tokens.max(8192)
+    } else if matches!(profile.provider, LLMProvider::MiniMax) {
+        // Official docs (platform.minimax.io): context window 204,800; coding tools integration
+        // recommends max_tokens=64,000. Cap at 64k, but respect lower user-set values.
+        profile.max_tokens.min(64_000).max(4_096)
     } else if profile.max_tokens > 16384 {
         4096
     } else {
@@ -890,7 +894,13 @@ pub async fn stream_chat_completion(
             profile.provider,
             LLMProvider::Ollama | LLMProvider::LMStudio
         );
-        let default_timeout = if is_local { 300u32 } else { 30u32 };
+        let default_timeout = if is_local {
+            300u32
+        } else if matches!(profile.provider, LLMProvider::MiniMax) {
+            120u32
+        } else {
+            30u32
+        };
         let chunk_timeout = profile.stream_timeout_secs.unwrap_or(default_timeout);
         let chunk_result = match tokio::time::timeout(
             std::time::Duration::from_secs(chunk_timeout as u64),

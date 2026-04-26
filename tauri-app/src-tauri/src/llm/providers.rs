@@ -28,20 +28,39 @@ const REGISTRY_URL: &str =
                                                                                          // const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 
 pub fn static_minimax_models() -> Vec<Model> {
+    // Context windows per official docs: https://platform.minimax.io/docs/api-reference/api-overview
+    // M2.x series: 204,800 tokens context window
+    // Recommended max_tokens for coding integrations: 64,000 (per AI coding tools guide)
     vec![
         Model {
             id: "MiniMax-M2.7".into(),
             name: "MiniMax M2.7".into(),
-            context_window: 1_000_000,
-            description: Some("MiniMax flagship multimodal reasoning model, 1M context.".into()),
+            context_window: 204_800,
+            description: Some("MiniMax flagship model. Context: 204k. Recommended output: 64k.".into()),
             cost_in: Some(0.30),
+            cost_out: Some(1.10),
+        },
+        Model {
+            id: "MiniMax-M2.7-highspeed".into(),
+            name: "MiniMax M2.7 Highspeed".into(),
+            context_window: 204_800,
+            description: Some("MiniMax M2.7 fast variant. Context: 204k.".into()),
+            cost_in: Some(0.30),
+            cost_out: Some(1.10),
+        },
+        Model {
+            id: "MiniMax-M2.5".into(),
+            name: "MiniMax M2.5".into(),
+            context_window: 204_800,
+            description: Some("MiniMax M2.5 model. Context: 204k.".into()),
+            cost_in: Some(0.20),
             cost_out: Some(1.10),
         },
         Model {
             id: "MiniMax-Text-01".into(),
             name: "MiniMax Text-01".into(),
             context_window: 1_000_000,
-            description: Some("MiniMax long-context text model, 1M context.".into()),
+            description: Some("MiniMax legacy long-context text model, 1M context.".into()),
             cost_in: Some(0.20),
             cost_out: Some(1.10),
         },

@@ -133,15 +133,25 @@ export function LLMSettings({ profiles, onUpdate }: LLMSettingsProps) {
                     }).finally(() => {
                         setLoadingModels(false);
                     });
-                } else if (p.provider === 'MiniMax') {
-                    // MiniMax: auto-fetch static fallback list (no key needed for static models)
+                } else if (p.provider === 'MiniMax' && isNewProfile) {
+                    // MiniMax: auto-fetch static list once on profile switch (no key needed)
                     setLoadingModels(true);
                     invoke<any[]>('fetch_models_from_provider', {
                         providerId: p.provider,
                         baseUrl: p.base_url || 'https://api.minimax.io/v1',
                         apiKey: ''
                     }).then(res => {
-                        setModelList(sortModels(res));
+                        const sorted = sortModels(res);
+                        setModelList(sorted);
+                        // Sync max_tokens for the currently selected model
+                        const currentModel = sorted.find((m: any) => m.id === p.model);
+                        if (currentModel?.context_window) {
+                            setEditForm(prev => prev?.id === p.id ? ({
+                                ...prev,
+                                max_tokens: currentModel.context_window || prev.max_tokens,
+                                context_window_override: currentModel.context_window
+                            }) : prev);
+                        }
                     }).catch(e => {
                         console.error('[LLMSettings] Failed to auto-fetch MiniMax models:', e);
                     }).finally(() => {
