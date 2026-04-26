@@ -7,7 +7,7 @@
 //! Reference: https://github.com/router-for-me/CLIProxyAPI (translator/codex/openai/)
 
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::Emitter;
@@ -279,6 +279,9 @@ fn tools_to_codex(tools: &[Tool]) -> Vec<CodexTool> {
 fn build_headers(access_token: &str, account_id: Option<&str>) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // Codex streams SSE for a long time; avoid compressed response-body decoder failures
+    // from surfacing as fatal "error decoding response body" stream errors.
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", access_token))
@@ -908,10 +911,11 @@ pub async fn stream_codex_completion(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_codex_request, messages_to_codex_payload, resolve_codex_model,
+        build_codex_request, build_headers, messages_to_codex_payload, resolve_codex_model,
         normalize_codex_tool_arguments, resolve_codex_stream_timeout_secs, CodexInputItem,
         DEFAULT_CODEX_INSTRUCTIONS,
     };
+    use reqwest::header::ACCEPT_ENCODING;
     use crate::ai::models::ApiMessage;
     use crate::llm_profiles::{
         LLMProfile, LLMProvider, DEFAULT_CODEX_REASONING_EFFORT, DEFAULT_CODEX_STREAM_TIMEOUT_SECS,
@@ -1038,5 +1042,15 @@ mod tests {
         let parsed: Value = serde_json::from_str(&normalized).unwrap();
 
         assert_eq!(parsed["code"], "Сообщить(\"ok\");");
+    }
+
+    #[test]
+    fn build_headers_requests_uncompressed_codex_streams() {
+        let headers = build_headers("token", None).unwrap();
+
+        assert_eq!(
+            headers.get(ACCEPT_ENCODING).unwrap().to_str().unwrap(),
+            "identity"
+        );
     }
 }
