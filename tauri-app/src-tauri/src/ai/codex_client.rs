@@ -367,10 +367,10 @@ fn resolve_codex_model(profile: &crate::llm_profiles::LLMProfile) -> String {
     if profile.model.trim().is_empty()
         || matches!(
             profile.model.as_str(),
-            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant"
+            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant" | "gpt-5.4"
         )
     {
-        "gpt-5.4".to_string()
+        "gpt-5.5".to_string()
     } else {
         profile.model.clone()
     }
@@ -642,9 +642,9 @@ pub async fn stream_codex_completion(
     let model = if profile.model.trim().is_empty()
         || matches!(
             profile.model.as_str(),
-            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant"
+            "codex-cli" | "codex-mini-latest" | "o4-mini" | "o3" | "gpt-5-3" | "gpt-5-3-instant" | "gpt-5.4"
         ) {
-        "gpt-5.4".to_string()
+        "gpt-5.5".to_string()
     } else {
         profile.model.clone()
     };
@@ -1146,7 +1146,7 @@ mod tests {
         profile.provider = LLMProvider::CodexCli;
         profile.model = "codex-mini-latest".to_string();
 
-        assert_eq!(resolve_codex_model(&profile), "gpt-5.4");
+        assert_eq!(resolve_codex_model(&profile), "gpt-5.5");
     }
 
     #[test]
@@ -1165,7 +1165,7 @@ mod tests {
 
         let request = build_codex_request(&profile, &messages, None, true);
 
-        assert_eq!(request.model, "gpt-5.4");
+        assert_eq!(request.model, "gpt-5.5");
         assert_eq!(request.reasoning.effort, DEFAULT_CODEX_REASONING_EFFORT);
         assert!(request.stream);
         assert!(request.tools.is_none());
